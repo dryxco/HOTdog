@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>perception</name>
+  <version>0.0.1</version>
+  <description>Perception package for object detection, localization, and bark action.</description>
+  <maintainer email="jenifer7933@snu.ac.kr">Suyeon Woo</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>message_filters</exec_depend>
+  <exec_depend>numpy</exec_depend>
+  <exec_depend>torch</exec_depend>
+
+  <test_depend>pytest</test_depend>
+</package>
