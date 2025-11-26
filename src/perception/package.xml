@@ -6,7 +6,7 @@
   <maintainer email="jenifer7933@snu.ac.kr">Suyeon Woo</maintainer>
   <license>Apache-2.0</license>
 
-  <buildtool_depend>ament_python</buildtool_depend>
+  <buildtool_depend>ament_cmake</buildtool_depend>
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
@@ -14,8 +14,5 @@
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>cv_bridge</exec_depend>
   <exec_depend>message_filters</exec_depend>
-  <exec_depend>numpy</exec_depend>
-  <exec_depend>torch</exec_depend>
 
-  <test_depend>pytest</test_depend>
 </package>
