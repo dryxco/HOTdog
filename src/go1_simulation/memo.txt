@@ -30,9 +30,10 @@ ros2 topic pub /FL_hip_controller/command \
 
 # Start Gazebo without Launch File
 export GZ_SIM_RESOURCE_PATH="/opt/ros/jazzy/share:/home/roy/make_ai_robot/src/environment/models:/home/roy/make_ai_robot/src/environment/fuel_models"
+ros2 launch ros_gz_sim gz_sim.launch.py gz_args:='-r -v 4 /home/roy/make_ai_robot/src/environment/worlds/hospital.world'
 ros2 launch ros_gz_sim gz_sim.launch.py gz_args:='-r -v 4 /home/roy/make_ai_robot/src/environment/worlds/test_project_assets.world'
 ros2 launch ros_gz_sim gz_sim.launch.py gz_args:='-r -v 4 /home/roy/make_ai_robot/src/environment/worlds/empty.world'
-ros2 launch ros_gz_sim gz_sim.launch.py gz_args:='-r -v 4 /home/roy/make_ai_robot/src/environment/worlds/hospital.world'
+
 
 
 # Check ROS2 controllers

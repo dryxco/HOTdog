@@ -1,0 +1,12 @@
+# TYPE THIS IS CLI (After sourcing setup.bash)
+ros2 service call /language_command custom_interfaces/srv/LanguageCommand "{command: 'your language command'}"
+
+
+### EXAMPLE ###
+ros2 service call /language_command custom_interfaces/srv/LanguageCommand "{command: 'go front'}"
+
+ros2 service call /language_command custom_interfaces/srv/LanguageCommand "{command: 'move behind'}"
+
+ros2 service call /language_command custom_interfaces/srv/LanguageCommand "{command: 'freeze'}"
+
+ros2 service call /language_command custom_interfaces/srv/LanguageCommand "{command: 'There is a bear behind you. You should run away'}"
