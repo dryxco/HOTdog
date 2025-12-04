@@ -1,0 +1,24 @@
+OPENAI_API_KEY: bashrc
+
+prompt: |
+  You can control a robot agent of Go1 quadruped robot.
+  You will take natural language user command. 
+  Your task is to select the appropriate action among the candidates.
+
+  Here is the list of candidates:
+  ACTION_CANDIDATES
+
+  And here is the user command:
+  USER_COMMAND
+
+  Your response should be formatted as follows:
+  ```python
+  ACTION_NAME
+  ```
+
+action_candidates:
+  node:
+    - stop.py
+    - go_front.py
+  launch:
+    - go_back.launch.py

@@ -76,6 +76,16 @@ Worlds and models for simulation.
 - World files like hospital.world, empty.world, etc.
 - Models which will be used in the world files
 
+## 7. **custom_interfaces**
+Custom interfaces (topic or service) for your mission
+- Currently, there is one service `LanguageCommand.srv` which will be used by `language_command_handler` package
+- This service is used to command robot and get the ROS2 node (launch) name the robot called.
+
+## 8. **language_command_handler**
+Interface package to enable language based communication with robot.
+- This packge is used to control robot with only language.
+- Instead of starting new nodes or launch files for every case, you need to handle all the cases with only this package.
+
 ---
 
 # 📥 Installation
@@ -126,18 +136,23 @@ You should see:
 ```bash
 Starting >>> ros2_unitree_legged_msgs
 Starting >>> aws_robomaker_hospital_world
-Starting >>> path_tracker
-Starting <<< aws_robomaker_hospital_world [2.13s]
-Finished <<< ros2_unitree_legged_msgs [10.2s]                                    
+Starting >>> custom_interfaces
+Starting >>> path_tracker                                        
+Finished <<< aws_robomaker_hospital_world [1.64s]                             
+Finished <<< custom_interfaces [7.23s]                                            
+Starting >>> language_command_handler
+Finished <<< language_command_handler [1.93s]                                     
+Finished <<< ros2_unitree_legged_msgs [10.5s]                                        
 Starting >>> ros2_unitree_legged_control
-Starting >>> unitree_guide2
-Finished <<< ros2_unitree_legged_control [14.9s]                        
+Starting >>> unitree_guide2                                    
+Finished <<< ros2_unitree_legged_control [12.7s]                         
 Starting >>> go1_simulation
-Finished <<< path_tracker [25.6s]                                       
-Finished <<< go1_simulation [2.41s]                                      
-Finished <<< unitree_guide2 [20.0s]                       
+Finished <<< path_tracker [23.9s]                                        
+Finished <<< go1_simulation [2.34s]                                       
+Finished <<< unitree_guide2 [20.0s]                        
 
-Summary: 6 packages finished [30.4s]
+Summary: 8 packages finished [30.6s]
+
 ```
 
 ## Step 4: Source the Workspace
@@ -168,6 +183,8 @@ make_ai_robot/
 │   ├── go1_simulation/
 │   ├── path_tracker/
 │   ├── environment/
+│   ├── custom_interfaces/
+│   ├── language_command_handler/
 │   ├── ros2_unitree_legged_controller/
 │   ├── ros2_unitree_legged_msgs/
 │   └── unitree_guide2/
@@ -333,6 +350,153 @@ The current `move_go1.py` does not consider collisions at all. **You should impl
 
 Also, the path tracking ability might not be optimal. **For better path following, you can tune the parameters in `path_tracker/config/mppi.yaml`.**
 
+## 5. Communicate with robot through language
+
+**Step 1**: Download Anaconda installation script
+
+To handle language command, we will use OpenAI API. 
+For that, we need to create new virtual environment with Anaconda. 
+
+```bash
+cd ~/Downloads
+# This command will create 'Anaconda3-2024.10-1-Linux-x86_64.sh' under Downloads folder
+wget https://repo.anaconda.com/archive/Anaconda3-2025.06-1-Linux-x86_64.sh
+```
+
+**Step 2**: Install Anaconda
+
+```bash
+bash Anaconda3-2025.06-1-Linux-x86_64.sh
+```
+
+You should see:
+
+```bash
+Welcome to Anaconda3 2025.06-1
+
+In order to continue the installation process, please review the license
+agreement.
+Please, press ENTER to continue
+>>>
+```
+
+Enter `yes` and press `enter` several times to finish installation.
+
+You can check the installation with:
+
+```bash
+source ~/.bashrc
+conda --version
+# You should see: conda 25.5.1
+```
+
+**Step 3**: Edit `~/.bashrc` file
+
+Turn off conda if it is enables:
+```bash
+# If your terminal is like: (base) roy@roy:~$ 
+conda deactivate
+```
+
+Open `~/.bashrc`. We use `gedit` here:
+```bash
+gedit ~/.bashrc
+```
+
+Change Anaconda setting:
+```bash
+# Remove this:
+
+# >>> conda initialize >>>
+# !! Contents within this block are managed by 'conda init' !!
+__conda_setup="$('/home/roy/anaconda3/bin/conda' 'shell.bash' 'hook' 2> /dev/null)"
+if [ $? -eq 0]; then
+...
+...
+...
+...
+unset __conda_setup
+# <<< conda initialize <<<
+
+# And add this:
+source ~/anaconda3/etc/profile.d/conda.sh
+```
+
+You need to also declare `OPENAI_API_KEY` to use ChatGPT through Python API:
+```bash
+# Add this in your bashrc file:
+export OPENAI_API_KEY='sk-........' # Use your API key
+```
+
+**Step 4**: Create new conda environment
+
+Create new conda environment `language_command_handler` to use `language_command_handler` package.
+
+Run this command:
+```bash
+source ~/.bashrc
+
+# Press yes
+conda create --name language_command_handler python=3.12.3
+```
+
+Install dependencies:
+```bash
+cd ~/make_ai_robot/src/langauge_command_handler
+conda activate language_command_handler
+pip install -r requirements.txt
+```
+
+If there is no error, you can use `language_command_handler` package from now.
+
+**Step 5**: Control robot with language
+
+Start simulation and junior controller:
+```bash
+# Do not activate conda before ros2 command, it can occur error 
+# Terminal 1
+ros2 launch go1_simulation go1.gazebo.launch.py use_gt_pose:=true
+
+# Terminal 2
+ros2 run unitree_guide2 junior_ctrl
+```
+
+After make robot setting as 'Move base' with number 5, run this command to start `language_command_handler` node:
+```bash
+source ~/.bashrc
+ros2 launch language_command_handler start_command_handler.launch.py
+```
+
+Now you can move various language command to control the robot. 
+For example, to move robot in forward direciton, you can use ROS2 service:
+```bash
+source ./install/setup.bash
+ros2 service call /language_command custom_interfaces/srv/LanguageCommand "{command: 'go forward'}"
+```
+
+You can use various commands like:
+```bash
+ros2 service call /language_command custom_interfaces/srv/LanguageCommand "{command: 'move behind'}"
+
+ros2 service call /language_command custom_interfaces/srv/LanguageCommand "{command: 'freeze'}"
+
+ros2 service call /language_command custom_interfaces/srv/LanguageCommand "{command: 'There is a bear behind you. You should run away'}"
+```
+
+The process of `language_command_handler` is like this:
+
+1. LLM prompt and callable ROS2 nodes and launch files are listed in `language_command_handler/config/command_handler_config.yaml` 
+2. Take language command from the service
+3. Call LLM with prompt, callable action list, and your command. LLM will select the best action to accomplish your command
+4. It start ROS2 node (or launch file) choosen before. If there was previous action, it automatically stops previous one and start the new one.
+
+Currently there are 3 actions you can call:
+- go_front.py
+- stop.py
+- go_back.launch.py
+
+You should change `command_handler_config.yaml` as you want to run your own codes with only language command.
+
 ---
 
 # 📝 Final Project:
@@ -342,30 +506,38 @@ Also, the path tracking ability might not be optimal. **For better path followin
 The final project consists of two parts: **Module Design** and **Competition**.
 
 **Total: 100 points**
-- **Module Design**: 40 points
-- **Competition**: 60 points
+- **Module Design**: 30 points
+- **Competition**: 70 points
 
 **Note**: Projects are evaluated on a team basis, not individually.
 
-### Module Design (40 points)
+### Module Design (30 points)
 
 You will build three essential modules for navigation:
 
 | Module | Points | Package Name |
 |--------|---------|--------------|
 | Localization | 20 pts | `localization` |
-| Path Planning | 10 pts | `path_planning` |
 | Perception | 10 pts | `perception` |
 
-**Submission**: You must submit these three packages approximately one week before the competition week. Each package will be evaluated independently.
+Even though path planning is essential for navigation, because we provided enough source code through eTL, we do not use it for grading.
 
-### Competition (60 points)
+### Competition (70 points)
 
-You will integrate all modules into a complete navigation system to accomplish five missions.
+**You will integrate all modules into a complete navigation system to accomplish 6 missions.**
+You will be given 30 minutes to accomplish the missions. 
+If the scores of two teams are same, the team which used lower time is score higher.
 
-- **5 missions** × 10 points each = 50 points
+Sometimes robot dies abrupty. In that case, we stop the timewatch.
+We manually move the robot to the place the robot died and restart the simulation. And time is measured again.
+To deal with this kind of sudden restart, it is highly recommend to make your modules to take robot start arguments.
+Especially, for the localization module, if robot starts not near `x=0, y=1, yaw=0`, and you do not used robot initialization with ROS2 arguments, even though you have proper map data, the localization would not work.
+
+**All the command should be done by only language command. So you can not manually turn on and off ROS2 node/launch.** To see how to do that, please refer how `language_command_handler` works. 
+
+- **6 missions** × 10 points each = 60 points
 - **Bonus**: +10 points for the most challenging mission (determined by lowest success rate)
-- **Total**: 60 points
+- **Total**: 70 points
 
 ---
 
@@ -451,30 +623,11 @@ Create a ROS2 package named `localization` with nodes (Python or C++) that:
    - Add IMU for motion prediction
    - Tune parameters for accuracy and performance
 
-
-### 📊 Evaluation:
-
-**Points**: 20 points (relative grading among teams)
-
-**Evaluation Process**: 
-The TAs will create 3 robot trajectory datasets using `rosbag2`. Your localization module will be tested on these pre-recorded trajectories, and its output will be compared against ground truth poses.
-
-**Evaluation Metrics**:
-
-1. **Frequency**: Your localization node must publish pose estimates at **≥15 Hz**
-   - This ensures real-time performance for navigation
-   - Lower frequencies will result in point deductions
-
-2. **Accuracy**: Measured using **Absolute Trajectory Error (ATE)**
-   - Metric: Median ATE across all trajectory points
-   - Tool: [evo - Python package for trajectory evaluation](https://github.com/MichaelGrupp/evo)
-   - Lower median ATE indicates better localization accuracy
-
 ### ⚠️ Important Requirements: 
 
 1. **No Ground Truth Data**: 
    - Do **not** use ground truth poses from Gazebo (e.g., `go1_gt_pose_publisher.py`)
-   - Estimate the pose using only realistic sensor data that would be available on a real robot
+   - Estimate the pose using only sensor data attached to the robot
    
 2. **No External Navigation Packages**: 
    - Do **not** use existing navigation packages like Nav2's AMCL
@@ -485,204 +638,88 @@ The TAs will create 3 robot trajectory datasets using `rosbag2`. Your localizati
    - Add launch arguments for initial pose (`x`, `y`, `z`, `roll`, `pitch`, `yaw`)
    - Default spawn: `x=0, y=1, z=0.5` with `roll=0, pitch=0, yaw=0`
    - Your localization must initialize correctly from any starting pose specified via arguments
-   - This is critical for evaluation with different starting positions
-
----
-
-## Module Design 2. `path_planning` 
-
-**Goal**: Create a `path_planning` package for collision-free path planning.
-
-**Why this matters**: 
-
-With the localization module providing the robot's position, the robot needs to navigate from its current position to a desired goal. During movement, the robot must be aware of obstacles and avoid them. Since the environment contains only static obstacles, we use a pre-built map for planning.
-
-
-**What you need to do:**
-
-Create a ROS2 package named `path_planning` with nodes (Python or C++) that:
-
-1. **Subscribe to current robot pose**: 
-   - Topic: `/go1_pose`
-   - Message type: `geometry_msgs/msg/PoseStamped`
-
-2. **Subscribe to goal pose**: 
-   - Topic: `/goal_pose`
-   - Message type: `geometry_msgs/msg/PoseStamped`
-
-3. **Subscribe to map data**: 
-   - Topic: `/map`
-   - Message type: `nav_msgs/msg/OccupancyGrid`
-
-4. **Plan a collision-free 2D path**: 
-   - Generate a path from the current pose to the goal pose
-   - Ensure the path avoids all obstacles in the map
-   - Consider robot size/footprint when checking collisions
-
-5. **Smooth the path**: 
-   - Raw planned paths (e.g., from A*) have sharp turns
-   - Apply smoothing (e.g., Bezier curves, spline interpolation)
-   - Ensure smoothed path remains collision-free
-
-6. **Publish the path**: 
-   - Topic: `/local_path`
-   - Message type: `nav_msgs/msg/Path`
-   - This path will be consumed by the `path_tracker` node 
-
-**Related Topics:**
-| Topic | Message Type | Description |
-|-------|--------------|-------------|
-| `/go1_pose` | geometry_msgs/msg/PoseStamped | Robot pose (x, y, z, qx, qy, qz, qw)|
-| `/goal_pose` | geometry_msgs/msg/PoseStamped | Robot goal pose (x, y, z, qx, qy, qz, qw)|
-| `/map` | nav_msgs/msg/OccupancyGrid | 2D occupancy grid map for localization |
-| `/local_path` | nav_msgs/msg/Path | 2D path message for path planning |
-
-**Learning Steps:**
-
-1. **Explore available topics**:
-   - Use the following commands:
-     - `ros2 topic list` - List all topics
-     - `ros2 topic info <topic_name> --verbose` - Topic details
-     - `ros2 topic echo /map` - Inspect map structure
-     - `ros2 topic echo /goal_pose` - See goal format
-
-2. **Study reference code**:
-   - **`move_go1.py`**: Understand how to:
-     - Subscribe to pose topics
-     - Generate simple paths
-     - Publish path messages to `/local_path`
-     - Structure `nav_msgs/msg/Path` messages
-
-3. **Study path planning algorithms**: 
-   - **Search-based**: A*, Dijkstra, RRT, RRT*
-   - **Graph-based**: Visibility graphs, Voronoi diagrams
-   - **Smoothing**: Bezier curves, B-splines, gradient descent smoothing
-   - **Collision checking**: Distance transforms, occupancy grid queries
-
-4. **Implement your path planning package**:
-   - Start with A* or Dijkstra on the occupancy grid
-   - Add post-processing to smooth the path
-   - Test with various start and goal positions
-   - Optimize for computation time
+   - **This is crucial for the case when you restart the simulation from another starting pose**
 
 ### 📊 Evaluation:
 
-**Points**: 10 points (relative grading among teams)
+**Points**: 20 points (success/failure)
 
 **Evaluation Process**: 
-The TAs will test your path planning module with 4 different scenarios: 2 different initial poses × 2 different goal poses. The robot must reach each goal without collisions.
+
+The TAs will provide 4 robot trajectories using `ros bag`. Each ros bag includes camera, lidar, and IMU topics. For the localization, you need map topic also, but we do not provide it. You might use the coarse map we provide, or your custom one. 
+
+Your localization module should localize the robot using these data. **For the ros bag data, robot always start near the `x=0, y=1, yaw=0`.** For each trajectory (for each ros bag), you should submit your localization result as `.txt` file. We provide one file as an example. **So you should submit 3 `.txt` files.** For the submission format, please refer the txt file we provide.
 
 **Evaluation Metrics**:
 
-1. **Goal Arrival**: 
-   - **Position accuracy**: L2 norm distance between final position and goal position
-   - **Orientation accuracy**: Angular difference between final yaw and goal yaw
-   - Threshold for success will be announced before evaluation
-
-2. **Collision Avoidance**: 
-   - Visual inspection in Gazebo simulation
-   - Any contact with obstacles results in failure for that scenario
-   - Borderline cases will be reviewed using contact sensor data
-
-### ⚠️ Important Requirements: 
-
-1. **Ground Truth Pose Allowed for Module Evaluation**: 
-   - For **module design evaluation only**, you may use ground truth robot pose from Gazebo
-   - Modules are evaluated independently with controlled inputs
-   - However, for the **competition**, you must use your own localization module
-
-2. **Create a Complete Map**: 
-   - ⚠️ **CRITICAL**: The current map in the `maps` folder is incomplete
-   - It contains only the building walls, not furniture, people, or other obstacles
-   - You **must** create your own complete map for effective obstacle avoidance
-   - See the "Build New Map" section at the end of this README for instructions
-   - Map quality directly affects path planning performance
-
-3. **Tune MPPI Parameters**: 
-   - The path tracker uses MPPI (Model Predictive Path Integral) control
-   - Default parameters in `path_tracker/config/mppi.yaml` may not be optimal
-   - Adjust parameters such as:
-     - Number of samples
-     - Time horizon
-     - Control costs (linear/angular velocity penalties)
-     - Path tracking weight
-   - Better tuning improves path following accuracy
+For the evaluation, TAs will use Absolute Trajectory Error (ATE) for the metric.
+Your localization result txt will be compared to ground truth trajectory.
+If your accuracy is above the threshold we set, your localization modules is graded as success.
+There are 3 ros bag data, whose score of each is (4, 8, 8), total 20. If you success, you get the point. 
 
 ---
 
-## Module Design 3. `perception` 
+## Module Design 2. `perception` 
 
-**Goal**: Create a `perception` package for object detection and localization.
+This module focuses on building a **ROS2 perception system** capable of detecting objects, classifying them, estimating distance, and generating robot speech cues based on object position. The final output will be verified using the provided interface viewer.
 
-**Why this matters**: 
+**Goal**: Develop a ROS2 package named **`perception`** that performs real-time object detection using RGB + depth images and publishes formatted outputs for the system.
 
-To search for and find a desired object, the robot needs to interpret camera images, determine whether the target object is present, and if so, localize it. The robot must then move closer to the object and align itself so that the object is centered in its field of view. 
+**Requirements**
 
+1. Subscribe to Camera Data
 
-**What you need to do:**
+   Your node must subscribe to:
 
-Create a ROS2 package named `perception` with nodes (Python or C++) that:
+   - **RGB Image**
+   - `/camera_top/image`
+   - **Depth Image**
+   - `/camera_top/depth`
 
-1. **Subscribe to camera data**:
-   - RGB images: `/camera_face/image` or `/camera_top/image`
-   - Depth images: `/camera_face/depth` or `/camera_top/depth`
-   - Camera info: `/camera_face/camera_info` or `/camera_top/camera_info`
+2. Object Detection & Classification
 
-2. **Detect and classify objects**:
-   - Run an object detection model (e.g., YOLO)
-   - Determine whether the target object exists in the image
-   - Distinguish between good food (edible) and bad food (not edible) - Refer mission 2
+   Your perception node should:
 
-3. **Approach and center the object**:
-   - If the target object is detected, command the robot to move closer
-   - Use depth information to estimate distance
-   - Align the robot so the object appears at the horizontal center of the image
+   - Run an object detection model such as YOLO
+   - Determine whether the target object exists
+   - Use the depth image to obtain the distance to the target object
 
-4. **Trigger "bark" action**:
-   - Publish string message `"bark"` to the `/bark` topic
-   - Publish **5 times at 1 Hz** (5 messages, 1 second apart)
-   - Only trigger when **all** of these conditions are met:
-     - Object is within **3 meters** (use depth camera data)
-     - Object is **horizontally centered**: object center in range [image_width/3, 2×image_width/3]
-     - Object is correctly classified as edible food
+3. Required Published Topics
 
-**Related Topics:**
-| Topic | Message Type | Description |
-|-------|--------------|-------------|
-| `/go1_pose` | geometry_msgs/msg/PoseStamped | Robot pose (x, y, z, qx, qy, qz, qw)|
-| `/camera_face/camera_info` | sensor_msgs/msg/CameraInfo | Camera information of face camera |
-| `/camera_face/image` | sensor_msgs/msg/Image | RGB image of face camera |
-| `/camera_face/depth` | sensor_msgs/msg/Image | Depth image of face camera |
-| `/camera_face/points` | sensor_msgs/msg/PointCloud2 | Colored point cloud of face camera |
-| `/camera_top/camera_info` | sensor_msgs/msg/CameraInfo | Camera information of top camera |
-| `/camera_top/image` | sensor_msgs/msg/Image | RGB image of top camera |
-| `/camera_top/depth` | sensor_msgs/msg/Image | Depth image of top camera |
-| `/camera_top/points` | sensor_msgs/msg/PointCloud2 | Colored point cloud of top camera |
+   The node must publish the following:
+
+   | Topic | Type | Description |
+   |------|------|-------------|
+   | `/camera/detections/image` | `sensor_msgs/Image` | Original RGB image with bounding boxes |
+   | `/detections/labels` | `std_msgs/String` | Detected object label(s) |
+   | `/detections/distance` | `std_msgs/Float32` | Distance to the detected object |
+   | `/robot_dog/speech` | `std_msgs/String` | `"bark"` if an edible object is centered, otherwise `"None"` |
+
+   #### Center Region Rule
+
+      - The image's leftmost and rightmost **1/5** regions are *excluded*.
+      - If an edible object is detected whose bounding-box center lies within the **middle 3/5** of the image → publish `"bark"`.
+
+4. Interface Verification
+
+   <img src="images/perception_module_example.png" alt="Perception Module Example" width="600"/>
+
+   Run the viewer to verify all published topics:
+
+   ```bash
+   ros2 launch module_test interface_viewer.launch.py
+   ```
+
 
 **Learning Steps:**
-
-1. **Explore available camera topics**:
-   - Use the following commands:
-     - `ros2 topic list` - List all topics
-     - `ros2 topic info /camera_face/image --verbose` - Get image topic details
-     - `ros2 topic hz /camera_face/image` - Check camera frame rate
-     - `ros2 topic echo /camera_face/depth --no-arr` - Inspect depth data structure
-
-2. **Study reference code**:
-   - **`publish_pointcloud.py`**: Learn how to:
-     - Subscribe to RGB and depth images using `message_filters`
-     - Convert ROS Image messages to OpenCV/NumPy format using `cv_bridge`
-     - Synchronize multiple sensor streams
-     - Publish processed data to topics
-
-3. **Study computer vision and machine learning**: 
+1. **Study computer vision and machine learning**: 
    - **Object Detection**: YOLO, DETR, etc
    - **Data Collection**: Capture images from simulation, label using tools like LabelImg or Roboflow
    - **Model Training**: Fine-tune pre-trained models on custom food dataset
    - **Depth Processing**: Extract distance from depth images, handle invalid depth values
    - **Visual Servoing**: Align robot with object using visual feedback
 
-4. **Implement your perception package**:
+2. **Implement your perception package**:
    - Start with a pre-trained object detection model
    - Collect training data for good/bad food from the simulation
    - Fine-tune the model for your specific objects
@@ -691,60 +728,40 @@ Create a ROS2 package named `perception` with nodes (Python or C++) that:
 
 ### 📊 Evaluation:
 
-**Points**: 10 points (relative grading among teams)
+**Points**: 10 points (absolute evaluation)
 
 **Evaluation Process**: 
-The TAs will test your perception module 3 times. At each test, the robot will be placed in a small closed room **(the box room in the hospital)** with one good food item and one bad food item (see Competition Mission 2 for food examples). **There would be no object at the first scene. Robot need to travel the room little bit.** The robot must:
-- Detect and distinguish between good and bad food
-- Approach the good food
-- Center itself in front of the good food
-- Bark when properly positioned
-- Stop moving after barking
+A ROS bag will be provided. You will replay the ROS bag, run the provided launch file, record the viewer output as a video, and submit the recording.
 
-**Evaluation Metrics**:
-
-1. **Distance to Target**: 
-   - Measured after the final bark message
-   - Distance between robot and good food object
-   - Closer is better (target: within 3 meters)
-
-2. **Centering Accuracy**: 
-   - Measured after the final bark message
-   - Horizontal position of the object in the camera image
-   - Target: object center within middle third of image [width/3, 2×width/3]
-   - Deviation from image center will be scored
-
-3. **Classification Accuracy**:
-   - Penalty if robot barks at bad food or fails to identify good food 
-
-### ⚠️ Important Requirements: 
-
-1. **No Ground Truth Object Poses**: 
-   - Do **not** subscribe to ground truth object poses from Gazebo
-   - You must detect and localize objects using only camera data
-   - Ground truth robot pose (`go1_gt_pose_publisher.py`) is allowed for module evaluation
-
-2. **Ground Truth Robot Pose Allowed for Module Evaluation**: 
-   - For **module design evaluation only**, you may use ground truth robot pose
-   - Modules are evaluated independently with controlled conditions
-   - However, for the **competition**, you must use your own localization module
-
-3. **Simplified Navigation for Testing**: 
-   - The evaluation room (box room) has no obstacles between robot and food
-   - You may use the simple `move_go1.py` node for basic movement during module evaluation
-   - For competition missions, you'll need full path planning integration 
-
+**Evaluation Criteria**:
+Assessment follows an absolute and qualitative evaluation. If an edible object is centered within a distance of 3 meters or less, the evaluator checks whether:
+- the intermediate outputs (detection results, distance) are correct, and
+- the bark topic is published at the appropriate moment.
 ---
 
 # ⚔️ Competition
 
-In the competition phase, you will integrate all three modules (localization, path planning, perception) into a complete autonomous navigation system. The robot will receive high-level commands and must accomplish various missions.
+
+In the competition, you will integrate all three modules (localization, path planning, perception) into a complete autonomous navigation system. The robot will receive high-level language commands and must accomplish various missions.
+
+**You will integrate all modules into a complete navigation system to accomplish 6 missions.**
+You will be given 30 minutes to accomplish the missions. 
+If the scores of two teams are same, the team which used lower time is score higher.
+
+Sometimes robot dies abrupty. In that case, we stop the timewatch.
+We manually move the robot to the place the robot died and restart the simulation. And time is measured again.
+To deal with this kind of sudden restart, it is highly recommend to make your modules to take robot start arguments.
+Especially, for the localization module, if robot starts not near `x=0, y=1, yaw=0`, and you do not used robot initialization with ROS2 arguments, even though you have proper map data, the localization would not work.
+
+**All the command should be done by only language command. So you can not manually turn on and off ROS2 node/launch.** To see how to do that, please refer how `language_command_handler` works. 
+
+**The language would be changed!** For example, for mission 1, we will use similar, but not exactly same language command. For example, instead of 'Please navigate me to the toilet', we will might use 'Toilet, toilet, toilet. Hurry.' for the language command. The robot should do the mission robustly to the langauge command. **For that, you need to design your prompt well with `command_handler_config`.**
 
 **Key Rules**:
 - You **must** use your own localization module (no ground truth robot poses)
 - You **must** use your own path planning module for collision-free navigation  
-- Ground truth object poses from Gazebo are **not allowed**
-- Missions will be announced via natural language commands (e.g., "Please navigate me to the toilet")
+- Using ground truth object poses from Gazebo is **not allowed**
+- **Missions will be done only via natural language commands (e.g., "Please navigate me to the toilet")**
 
 ---
 
@@ -754,20 +771,20 @@ In the competition phase, you will integrate all three modules (localization, pa
 
 **Task Description**: 
 
-The robot will receive a natural language command (e.g., "Go to the toilet"). Your system must navigate the robot to the toilet and position it with a clear view. The navigation stop when robot `bark` to alert the position of toilet.
+The robot will receive a natural language command (e.g., "Go to the toilet"). Your system must navigate the robot to the toilet. The toilet should be aligned to camera center. The navigation stop when robot `bark` to alert the position of toilet.
 
 **Approach**: 
 
 For this mission, you may **pre-calculate and hard-code** the toilet's position:
 - Explore the map before the competition
-- Determine the 2D pose that positions the robot to face the toilet
+- Determine the 2D pose that faces toilet directly
 - Example: `x=10.0, y=5.0, yaw=1.57` (this is just an example, not the actual position)
 - Use your path planning to navigate to this pre-defined goal
 
 **Requirements**:
 - Robot must `bark` when the conditions (distance and orientation) are satisfied. Condition for barking is same as `module design 3`.
-- Navigation must be collision-free for performance. But we do not degrade the score with this. 
-- Must use your own localization and path planning modules
+- Navigation must be collision-free for high rate success. But we do not degrade the score with this. 
+- You must use your own localization and path planning modules
 
 ### 📊 Evaluation:
 
@@ -799,13 +816,26 @@ The following food items will be placed in the environment:
 - **Left column (Good Food - Edible)**: Banana, Apple, Pizza
 - **Right column (Bad Food - Not Edible)**: Rotten/spoiled versions, inedible objects
 
-**Note on Food Placement**: The physical position (floor, table, etc.) does not matter. A good apple is edible whether on the floor or floating in the air - only the classification matters.
-
-
 <img src="images/mission_2_1.png" alt="Mission 2 1" width="600"/>
 
 
 <img src="images/mission_2_2.png" alt="Mission 2 2" width="600"/>
+
+
+**Food Placement**: 
+
+We provide example map with foods for practice. 
+There are total 10 foods in the map. The hospital map has 20 rooms, and half of them (10 rooms) have the food each. 
+We provide a map with food for your practice. 
+But for the final competition, the position of the foods will be changed. (room change from room1 to room2, or position change within the room.)
+The physical position (floor, table, etc.) does not matter. A good apple is edible whether on the floor or floating in the air - only the classification matters.
+
+
+<img src="images/mission_2_3.png" alt="Mission 2 3" width="600"/>
+
+
+<img src="images/mission_2_4.png" alt="Mission 2 4" width="600"/>
+
 
 
 ### 📊 Evaluation:
@@ -814,36 +844,107 @@ The following food items will be placed in the environment:
 
 ## Mission 3
 
-**Status**: To Be Announced
+**Goal**: Move to cone of specified color
 
-**Source**: Mission will be designed based on student proposals and feedback.
+**Task Description**:
 
-Details will be provided during the course.
+The robot will receive a natural language command (e.g. "Go to the red cone"). Your system must navigate the robot to the specified colored cone. The navigation stops when robot `bark` to alert the position of the cone. It is not determined which color of cone will be used for the command. The robot should be able to detect any color of cone.
+
+
+<img src="images/mission_3.png" alt="Mission 3" width="600"/>
+
+
+**Requirements**:
+
+There are three cones with different color (red, green, and blue). 
+The positions of cones will not be changed. But the order might be different. 
+For example, currently the order is blue cone, red cone, and green cone from left.
+But that order might be changed to red, green, and blue.
+
+### 📊 Evaluation:
+
+**Points**: 10 points with success/failure. The robot should bark when conditions are satisfied.
 
 ---
 
 ## Mission 4
 
-**Status**: To Be Announced
+**Goal**: Move to box to the goal position
 
-**Source**: Mission will be designed based on student proposals and feedback.
+**Task Description**:
 
-Details will be provided during the course.
+The robot will receive a natural language command (e.g. "Move the box to the goal position"). 
+Your system must push the box to the goal position with the robot body. The goal position is specified as red area.
+
+
+<img src="images/mission_4_1.png" alt="Mission 4 1" width="600"/>
+
+
+**Requirements**:
+
+The goal position (red area) will not be changed for the final competition.
+But the position of delivery box will be changed. 
+TAs will randomly choose position of delivery box among three candidates. 
+Distance between goal area and delivery box is 2m, and the orientation of box will be aligned to make pushing easy.
+
+<img src="images/mission_4_2.png" alt="Mission 4 2" width="600"/>
+
+
+### 📊 Evaluation:
+
+**Points**: 10 points with success/failure. The box should be in the red area.
 
 ---
 
 ## Mission 5
 
-**Status**: To Be Announced
+**Goal**: Move to the empty room without stop sign
 
-**Source**: Mission will be designed based on student proposals and feedback.
+**Task Description**:
 
-Details will be provided during the course.
+The robot will receive a natural language command (e.g. "Move to the empty room"). 
+There are two empty room in the hospital. You should go one of them without the stop sign.
+The stop sign will be placed near the entrance of the room to notice whether this room is allowed to go or not.
+
+
+<img src="images/mission_5_1.png" alt="Mission 5 1" width="600"/>
+
+
+<img src="images/mission_5_2.png" alt="Mission 5 2" width="600"/>\
+
+
+**Requirements**:
+The position of the stop sign will be changed (in front of empty room1 or room2, how far from the entrance)
+
+### 📊 Evaluation:
+
+**Points**: 10 points with success/failure. The robot body should be in the room.
+
+
+## Mission 6
+
+**Goal**: Rotate around the nurse.
+
+**Task Description**:
+
+In the break room of the hospital, there is a nurse next to the couch. 
+Find her, and rotate around her. She will be in the same room for the competition also, but the exact position might be different little bit. 
+
+
+<img src="images/mission_6_1.png" alt="Mission 6 1" width="600"/>
+
+
+<img src="images/mission_6_2.png" alt="Mission 6 2" width="600"/>\
+
+
+**Requirements**:
+The robot rotate around her. The rotation direction is not important.
+
+### 📊 Evaluation:
+
+**Points**: 10 points with success/failure. 
 
 ---
-
-**Note**: Missions 3, 4, and 5 will be announced later in the semester. Students are encouraged to propose challenging and creative mission ideas that test different aspects of autonomous navigation, perception, and decision-making.
-
 
 # 💡 Helpful Tips for ROS2 Beginners
 
@@ -1016,4 +1117,5 @@ This will create two new files in the maps directory:
 - `~/make_ai_robot/src/go1_simulation/maps/my_world.pgm` - The map image
 - `~/make_ai_robot/src/go1_simulation/maps/my_world.yaml` - Map metadata (resolution, origin, etc.)
 
-**Important**: The generated map should include all obstacles (furniture, people, etc.), not just walls. A complete map is essential for effective path planning and collision avoidance.
+**Important**: 
+The generated map should include all obstacles (furniture, people, etc.), not just walls. A complete map is essential for effective path planning and collision avoidance.
