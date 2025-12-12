@@ -30,12 +30,9 @@ class PerceptionNode(Node):
     Perception node for object detection and bark command generation.
     """
 
-    # Edible objects that trigger bark (COCO dataset classes)
+    # Edible objects that trigger bark for perception evaluation
     EDIBLE_CLASSES = [
-        'apple', 'banana', 'orange', 'broccoli', 'carrot', 'hot dog',
-        'pizza', 'donut', 'cake', 'sandwich', 'bowl', 'cup',
-        'bottle', 'wine glass', 'fork', 'knife', 'spoon',
-        'food', 'fruit', 'vegetable', 'snack', 'meat', 'bread',
+        'apple', 'pizza',
     ]
 
     def __init__(self):
