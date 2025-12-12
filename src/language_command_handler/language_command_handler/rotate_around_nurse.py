@@ -1,76 +1,41 @@
-#!/usr/bin/env python3
-"""
-This code is for ROS2 node 'rotate_around_nurse'
-Mission 6: Find the nurse in the break room and rotate around her.
-
-Strategy:
-1. Navigate to couch area (nurse is next to couch)
-2. Search for nurse by rotating
-3. If not found, move to next search position around couch
-벽 벽 벽 벽 벽
-벽 [COUCH] ←───── Position 1 (오른쪽)
-벽    ↑    ↖
-      │      Position 3 (대각선)
-      │
-   Position 2 (앞쪽)
-4. When found, approach and rotate around her
-"""
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Twist, PoseStamped
+from geometry_msgs.msg import Twist, Pose
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import Image
+from std_msgs.msg import Float32, String
+from cv_bridge import CvBridge
 import math
 
-
-class RotateAroundNurseNode(Node):
-    """
-    A ROS2 node that finds nurse near couch and rotates around her
-    """
-
+class RotateAroundNurse(Node):
     def __init__(self):
         super().__init__('rotate_around_nurse')
-        self.get_logger().info('Rotate around nurse node initialized')
 
-        # TODO: Set actual couch coordinates from map
-        self.couch_x = 5.0  # Couch X coordinate
-        self.couch_y = 3.0  # Couch Y coordinate
-
-        # Search positions around couch (will be calculated in setup)
-        self.search_radius = 2.0  # Distance from couch to search positions
-        self.search_positions = []
-        self.current_search_index = 0
-        self.setup_search_positions()
-
-        # Parameters
-        self.rotation_radius = 1.0      # Distance to maintain from nurse (meters)
-        self.rotation_speed = 0.3       # Angular speed for circling (rad/s)
-        self.linear_speed = 0.2         # Linear speed (m/s)
-        self.approach_speed = 0.3       # Speed when navigating
-        self.position_tolerance = 0.3   # Tolerance for reaching goal (meters)
-        self.angle_tolerance = 0.1      # Tolerance for angle alignment (radians)
-        self.search_rotation_count = 0  # Count rotation during search
-        self.max_search_rotation = 2 * math.pi  # One full rotation
-
-        # Robot pose (from odometry)
-        self.robot_x = 0.0
-        self.robot_y = 0.0
-        self.robot_yaw = 0.0
-        self.initial_search_yaw = 0.0
-
-        # Nurse detection
-        self.nurse_detected = False
-        self.nurse_x = 0.0
-        self.nurse_y = 0.0
-        self.nurse_distance = 0.0
-        self.nurse_angle = 0.0
-
-        # State machine
-        self.state = 'NAVIGATING'
-
-        # Publishers
-        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
-
-        # Subscribers
+        # Subscriptions
+        self.image_sub = self.create_subscription(
+            Image,
+            '/camera/detections/image',
+            self.image_callback,
+            10
+        )
+        self.label_sub = self.create_subscription(
+            String,
+            '/detections/labels',
+            self.label_callback,
+            10
+        )
+        self.distance_sub = self.create_subscription(
+            Float32,
+            '/detections/distance',
+            self.distance_callback,
+            10
+        )
+        self.center_sub = self.create_subscription(
+            Float32,
+            '/detections/bbox_center',
+            self.center_callback,
+            10
+        )
         self.odom_sub = self.create_subscription(
             Odometry,
             '/odom',
@@ -78,284 +43,158 @@ class RotateAroundNurseNode(Node):
             10
         )
 
-        # TODO: Subscribe to perception node's person detection topic
-        self.person_sub = self.create_subscription(
-            PoseStamped,
-            '/perception/detected_person',
-            self.person_callback,
-            10
-        )
+        # Publisher
+        self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
-        # Timer for control loop (10 Hz)
-        self.timer = self.create_timer(0.1, self.control_loop)
+        self.bridge = CvBridge()
 
-        self.get_logger().info(f'Couch position: ({self.couch_x}, {self.couch_y})')
-        self.get_logger().info(f'Search positions: {len(self.search_positions)} points around couch')
+        # FSM 상태
+        self.state = "NAVIGATE"  # NAVIGATE → SEARCH → ALIGN → APPROACH → ROTATE_AROUND
 
-    def setup_search_positions(self):
-        """
-        Create search positions around the couch
-        Couch is in corner (wall on left and back), so only accessible from:
-        - Right side (+X direction)
-        - Front side (-Y direction)
-        
-        벽 벽 벽 벽
-        벽 [COUCH] ← Position 1 (오른쪽에서)
-        벽    ↑
-              Position 2 (앞에서)
-        """
-        # Position 1: 소파 오른쪽에서 (소파를 왼쪽으로 바라봄)
-        self.search_positions.append((
-            self.couch_x + self.search_radius,  # 소파 오른쪽
-            self.couch_y,
-            math.pi  # 왼쪽(소파 방향)을 바라봄
-        ))
+        # 탐지 정보
+        self.detected_label = None
+        self.distance = None
+        self.center_x = None
 
-        # Position 2: 소파 앞에서 (소파를 위로 바라봄)
-        self.search_positions.append((
-            self.couch_x,
-            self.couch_y - self.search_radius,  # 소파 앞쪽
-            math.pi / 2  # 위쪽(소파 방향)을 바라봄
-        ))
+        # 현재 위치
+        self.current_x = 0.0
+        self.current_y = 0.0
+        self.current_yaw = 0.0
 
-        # Position 3: 대각선 (오른쪽 앞)
-        self.search_positions.append((
-            self.couch_x + self.search_radius * 0.7,
-            self.couch_y - self.search_radius * 0.7,
-            math.pi * 3 / 4  # 소파 방향(왼쪽 위)을 바라봄
-        ))
+        # 목표 위치 (방문 앞)
+        self.goal_x = 2.0
+        self.goal_y = 1.0
 
-        self.get_logger().info(f'Search positions (corner couch): {self.search_positions}')
+    # -----------------------------
+    # Callbacks
+    # -----------------------------
+    def label_callback(self, msg: String):
+        self.detected_label = msg.data
 
-    def odom_callback(self, msg):
-        """
-        Update robot pose from odometry
-        """
-        self.robot_x = msg.pose.pose.position.x
-        self.robot_y = msg.pose.pose.position.y
+    def distance_callback(self, msg: Float32):
+        self.distance = msg.data
 
+    def center_callback(self, msg: Float32):
+        self.center_x = msg.data
+
+    def odom_callback(self, msg: Odometry):
+        self.current_x = msg.pose.pose.position.x
+        self.current_y = msg.pose.pose.position.y
+        # yaw 계산
         q = msg.pose.pose.orientation
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-        self.robot_yaw = math.atan2(siny_cosp, cosy_cosp)
+        self.current_yaw = math.atan2(siny_cosp, cosy_cosp)
 
-    def person_callback(self, msg):
-        """
-        Receive detected person position from perception node
-        """
-        self.nurse_x = msg.pose.position.x
-        self.nurse_y = msg.pose.position.y
+    def image_callback(self, msg: Image):
+        frame = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+        nurse_visible = (self.detected_label == "nurse")
 
-        self.nurse_distance = math.sqrt(self.nurse_x**2 + self.nurse_y**2)
-        self.nurse_angle = math.atan2(self.nurse_y, self.nurse_x)
+        # FSM 실행
+        if self.state == "NAVIGATE":
+            self.navigate_to_goal()
+        elif self.state == "SEARCH":
+            self.search(nurse_visible)
+        elif self.state == "ALIGN":
+            self.align(nurse_visible, self.center_x)
+        elif self.state == "APPROACH":
+            self.approach(nurse_visible, self.distance)
+        elif self.state == "ROTATE_AROUND":
+            self.rotate_around()
 
-        self.nurse_detected = True
-        self.get_logger().info(
-            f'Nurse detected! Distance: {self.nurse_distance:.2f}m, Angle: {math.degrees(self.nurse_angle):.1f}°',
-            throttle_duration_sec=1.0
-        )
+    # -----------------------------
+    # 0) 목표 위치로 이동 (실제 좌표 기반)
+    # -----------------------------
+    def navigate_to_goal(self):
+        dx = self.goal_x - self.current_x
+        dy = self.goal_y - self.current_y
+        distance = math.hypot(dx, dy)
+        target_yaw = math.atan2(dy, dx)
+        yaw_error = target_yaw - self.current_yaw
 
-    def normalize_angle(self, angle):
-        """Normalize angle to [-pi, pi]"""
-        while angle > math.pi:
-            angle -= 2.0 * math.pi
-        while angle < -math.pi:
-            angle += 2.0 * math.pi
-        return angle
+        # 각도를 [-pi, pi]로 보정
+        while yaw_error > math.pi:
+            yaw_error -= 2*math.pi
+        while yaw_error < -math.pi:
+            yaw_error += 2*math.pi
 
-    def get_distance_to_goal(self, goal_x, goal_y):
-        """Calculate distance from robot to goal"""
-        dx = goal_x - self.robot_x
-        dy = goal_y - self.robot_y
-        return math.sqrt(dx**2 + dy**2)
-
-    def get_angle_to_goal(self, goal_x, goal_y):
-        """Calculate angle from robot to goal"""
-        dx = goal_x - self.robot_x
-        dy = goal_y - self.robot_y
-        return math.atan2(dy, dx)
-
-    def control_loop(self):
-        """Main control loop - state machine"""
         twist = Twist()
 
-        if self.state == 'NAVIGATING':
-            twist = self.navigate_to_search_position()
+        # 회전 우선
+        if abs(yaw_error) > 0.1:
+            twist.angular.z = 0.5 * yaw_error
+        elif distance > 0.1:
+            twist.linear.x = 0.25
 
-        elif self.state == 'SEARCHING':
-            twist = self.search_for_nurse()
+        self.cmd_pub.publish(twist)
+        self.get_logger().info(f"Navigating: distance={distance:.2f}, yaw_error={yaw_error:.2f}")
 
-        elif self.state == 'APPROACHING':
-            twist = self.approach_nurse()
+        if distance <= 0.1:
+            self.get_logger().info("Reached goal → SEARCH 단계로 이동")
+            self.state = "SEARCH"
+            self.cmd_pub.publish(Twist())
 
-        elif self.state == 'ROTATING':
-            twist = self.rotate_around_nurse()
-
-        elif self.state == 'COMPLETED':
-            self.get_logger().info('Mission 6 completed!', throttle_duration_sec=5.0)
-            twist = Twist()
-
-        self.cmd_vel_pub.publish(twist)
-
-    def navigate_to_search_position(self):
-        """Navigate to current search position around couch"""
+    # -----------------------------
+    # 1) 주변 회전하며 nurse 찾기
+    # -----------------------------
+    def search(self, nurse_visible):
         twist = Twist()
+        twist.angular.z = 0.4
+        self.cmd_pub.publish(twist)
+        if nurse_visible:
+            self.get_logger().info("Nurse detected → ALIGN 단계로 이동")
+            self.state = "ALIGN"
 
-        if self.current_search_index >= len(self.search_positions):
-            self.get_logger().error('Searched all positions but nurse not found!')
-            self.state = 'COMPLETED'
-            return twist
+    # -----------------------------
+    # 2) bbox center 기준 정렬
+    # -----------------------------
+    def align(self, nurse_visible, nurse_center_x):
+        if not nurse_visible or nurse_center_x is None:
+            self.state = "SEARCH"
+            return
 
-        goal_x, goal_y, goal_yaw = self.search_positions[self.current_search_index]
+        twist = Twist()
+        img_center_x = 320  # 카메라 중심
+        error = nurse_center_x - img_center_x
 
-        distance = self.get_distance_to_goal(goal_x, goal_y)
-        angle_to_goal = self.get_angle_to_goal(goal_x, goal_y)
-        angle_error = self.normalize_angle(angle_to_goal - self.robot_yaw)
-
-        self.get_logger().info(
-            f'Navigating to search position {self.current_search_index + 1}/{len(self.search_positions)}, distance: {distance:.2f}m',
-            throttle_duration_sec=2.0
-        )
-
-        # Check if nurse detected while navigating
-        if self.nurse_detected:
-            self.get_logger().info('Nurse detected while navigating! Approaching...')
-            self.state = 'APPROACHING'
-            return twist
-
-        if distance < self.position_tolerance:
-            # Reached search position, now align to face couch
-            yaw_error = self.normalize_angle(goal_yaw - self.robot_yaw)
-
-            if abs(yaw_error) < self.angle_tolerance:
-                self.get_logger().info(f'Reached search position {self.current_search_index + 1}, starting search...')
-                self.state = 'SEARCHING'
-                self.search_rotation_count = 0
-                self.initial_search_yaw = self.robot_yaw
-            else:
-                twist.angular.z = 0.5 * yaw_error
+        if abs(error) > 20:  # 허용 오차
+            twist.angular.z = -0.002 * error
+            self.cmd_pub.publish(twist)
         else:
-            # Navigate to position
-            if abs(angle_error) > self.angle_tolerance:
-                twist.angular.z = 0.5 * angle_error
-                twist.angular.z = max(-0.5, min(0.5, twist.angular.z))
-            else:
-                twist.linear.x = min(self.approach_speed, 0.5 * distance)
-                twist.angular.z = 0.3 * angle_error
+            self.state = "APPROACH"
+            self.cmd_pub.publish(Twist())
 
-        return twist
+    # -----------------------------
+    # 3) nurse까지 직진
+    # -----------------------------
+    def approach(self, nurse_visible, distance):
+        if not nurse_visible or distance is None:
+            self.state = "SEARCH"
+            return
 
-    def search_for_nurse(self):
-        """Rotate in place to search for nurse"""
         twist = Twist()
-
-        # Check if nurse found
-        if self.nurse_detected:
-            self.get_logger().info('Nurse found! Approaching...')
-            self.state = 'APPROACHING'
-            return twist
-
-        # Calculate how much we've rotated
-        rotation_done = abs(self.normalize_angle(self.robot_yaw - self.initial_search_yaw))
-
-        # Update rotation count (handle wrap-around)
-        self.search_rotation_count += 0.1 * 0.3  # dt * angular_speed (approximate)
-
-        if self.search_rotation_count >= self.max_search_rotation:
-            # Completed one full rotation, nurse not found here
-            self.get_logger().warn(f'Nurse not found at position {self.current_search_index + 1}, moving to next...')
-            self.current_search_index += 1
-            self.state = 'NAVIGATING'
-            return twist
-
-        # Rotate slowly to search
-        twist.angular.z = 0.3
-        self.get_logger().info(
-            f'Searching... (rotation: {math.degrees(self.search_rotation_count):.0f}°)',
-            throttle_duration_sec=1.0
-        )
-
-        return twist
-
-    def approach_nurse(self):
-        """Approach nurse until at rotation radius"""
-        twist = Twist()
-
-        if not self.nurse_detected:
-            self.get_logger().warn('Lost nurse, continuing search...')
-            self.state = 'SEARCHING'
-            self.search_rotation_count = 0
-            self.initial_search_yaw = self.robot_yaw
-            return twist
-
-        # Check if at rotation radius
-        if self.nurse_distance <= self.rotation_radius + 0.1:
-            self.get_logger().info('At rotation distance! Starting rotation around nurse...')
-            self.state = 'ROTATING'
-            return twist
-
-        # Move towards nurse
-        if abs(self.nurse_angle) > self.angle_tolerance:
-            twist.angular.z = 0.5 * self.nurse_angle
+        if distance > 1.0:
+            twist.linear.x = 0.25
+            self.cmd_pub.publish(twist)
         else:
-            twist.linear.x = min(self.linear_speed, 0.3 * (self.nurse_distance - self.rotation_radius))
-            twist.angular.z = 0.3 * self.nurse_angle
+            self.state = "ROTATE_AROUND"
+            self.cmd_pub.publish(Twist())
 
-        self.get_logger().info(
-            f'Approaching nurse, distance: {self.nurse_distance:.2f}m',
-            throttle_duration_sec=1.0
-        )
-
-        return twist
-
-    def rotate_around_nurse(self):
-        """Rotate around nurse in circular motion"""
+    # -----------------------------
+    # 4) nurse 주변 원 회전
+    # -----------------------------
+    def rotate_around(self):
         twist = Twist()
-
-        if not self.nurse_detected:
-            self.get_logger().warn('Lost nurse during rotation!')
-            # Try to re-acquire by searching
-            self.state = 'SEARCHING'
-            self.search_rotation_count = 0
-            self.initial_search_yaw = self.robot_yaw
-            return twist
-
-        # Circular motion
-        twist.linear.x = self.linear_speed
-
-        # Radius correction
-        radius_error = self.nurse_distance - self.rotation_radius
-
-        # Keep nurse at right side (-90 degrees)
-        target_nurse_angle = -math.pi / 2
-        angle_error = self.normalize_angle(self.nurse_angle - target_nurse_angle)
-
-        twist.angular.z = self.rotation_speed
-        twist.angular.z += 0.5 * radius_error
-        twist.angular.z += 0.3 * angle_error
-
-        twist.angular.z = max(-0.6, min(0.6, twist.angular.z))
-
-        self.get_logger().info(
-            f'Rotating around nurse, distance: {self.nurse_distance:.2f}m',
-            throttle_duration_sec=1.0
-        )
-
-        return twist
-
+        twist.linear.x = 0.2
+        twist.angular.z = 0.4
+        self.cmd_pub.publish(twist)
 
 def main(args=None):
     rclpy.init(args=args)
-    node = RotateAroundNurseNode()
+    node = RotateAroundNurse()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
 
-    try:
-        rclpy.spin(node)
-    finally:
-        stop_twist = Twist()
-        node.cmd_vel_pub.publish(stop_twist)
-        node.destroy_node()
-        rclpy.shutdown()
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

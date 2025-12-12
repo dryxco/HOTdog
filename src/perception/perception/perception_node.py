@@ -39,7 +39,7 @@ class PerceptionNode(Node):
         super().__init__('perception_node')
 
         # Declare parameters
-        self.declare_parameter('model_path', 'yolov8n.pt')
+        self.declare_parameter('model_path', 'yolov8n.pt') # trained yolo model path로 수정 필요함
         self.declare_parameter('confidence_threshold', 0.5)
         self.declare_parameter('distance_threshold', 3.0)
         self.declare_parameter('center_region_ratio', 0.6)
@@ -122,6 +122,13 @@ class PerceptionNode(Node):
         self.speech_pub = self.create_publisher(
             String,
             '/robot_dog/speech',
+            10
+        )
+        
+        # for alignment (목표 객체를 카메라의 중심에 두기 위함)
+        self.bbox_center_pub = self.create_publisher(
+            Float32,
+            '/detections/target_bbox_center_x',
             10
         )
 
@@ -236,11 +243,21 @@ class PerceptionNode(Node):
         min_distance = float('inf')
         should_bark = False
 
-        for det in detections:
+        # --- bbox center publish 준비 ---
+        bbox_center_msg = Float32()
+        detected_center_x = -1.0  # 기본값: 감지된 객체 없음
+
+        for i, det in enumerate(detections):
             bbox = det['bbox']
             class_name = det['class']
             confidence = det['confidence']
 
+            # 첫 번째 객체 기준으로 center_x 계산
+            if i == 0:
+                x1, y1, x2, y2 = bbox
+                detected_center_x = float((x1 + x2) / 2)
+
+            # 거리 계산
             distance = float('inf')
             if self.depth_image is not None:
                 distance = self.get_distance_at_bbox(self.depth_image, bbox)
@@ -249,6 +266,7 @@ class PerceptionNode(Node):
             is_close = distance <= self.distance_threshold
             is_in_center = self.is_centered(bbox, w)
 
+            # bbox 그리기
             color = (0, 255, 0) if (is_edible and is_close and is_in_center) else (255, 0, 0)
             x1, y1, x2, y2 = map(int, bbox)
             cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
@@ -256,7 +274,7 @@ class PerceptionNode(Node):
             label_text = f'{class_name}: {confidence:.2f}'
             if distance < float('inf'):
                 label_text += f' ({distance:.2f}m)'
-            
+
             (text_w, text_h), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
             cv2.rectangle(img, (x1, y1 - text_h - 10), (x1 + text_w, y1), color, -1)
             cv2.putText(img, label_text, (x1, y1 - 5),
@@ -271,6 +289,10 @@ class PerceptionNode(Node):
 
             if distance < min_distance and is_edible:
                 min_distance = distance
+
+        # --- Publish bbox center ---
+        bbox_center_msg.data = detected_center_x
+        self.bbox_center_pub.publish(bbox_center_msg)
 
         # Draw center region guide lines
         left_line = int(w * 0.2)
