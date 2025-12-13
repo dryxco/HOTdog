@@ -1,0 +1,16 @@
+simulator_node:
+  ros__parameters:
+    resolution: 0.05      # 가상 map resolution(미사용 시 제거해도 됨)
+    start_x: 1.5
+    start_y: 1.5
+
+path_planner_node:
+  ros__parameters:
+    # fallback resolution (실제로는 /map 메시지 resolution 사용)
+    resolution: 0.05
+
+    # inflation distance: 로봇 반경(m)
+    robot_radius: 0.30
+
+    # smoothing iterations (Chaikin)
+    smoothing_iterations: 3

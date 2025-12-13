@@ -1,239 +1,325 @@
 #!/usr/bin/env python3
 
 """
-This code is for ROS2 node 'language_command_handler' which 
+ROS2 node: language_command_handler
+
 1. Listen user command via 'language_command' service
-2. Call LLM to select the appropriate action
-3. Current code selects ROS2 node among 'go_front', 'go_back' and 'stop'
+2. Call LLM to select the appropriate mission (mission1~6)
+3. Execute the selected mission as a ROS2 node
 """
 
 import os
-import sys
 import subprocess
 import signal
-import openai
-import yaml
 import time
+import yaml
+import openai
 
 from ament_index_python.packages import get_package_share_directory
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
 from custom_interfaces.srv import LanguageCommand
 
 
 def call_LLM(prompt: str, client: openai.OpenAI) -> str:
-    """
-    Call LLM to select the appropriate action
-    """
-    # Call the OpenAI API
+    """Call LLM to select the appropriate mission"""
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {"role": "system", "content": "You are a helpful robot assistant."},
             {"role": "user", "content": prompt}
         ],
-        max_tokens=1000,
+        max_tokens=200,
         temperature=0.0
     )
-    
     return response.choices[0].message.content
 
 
 def parse_LLM_response(response_text: str) -> str:
-    """
-    Parse the response text from LLM to select the appropriate action
-    """
+    """Parse LLM response and extract a single action name"""
     response = response_text.strip()
-    if response.startswith("```python"):
-        response = response[len("```python"):].strip()
-    if response.endswith("```"):
-        response = response[:-len("```")].strip()
+
+    # Remove code fences if any
+    if response.startswith("```"):
+        lines = response.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].endswith("```"):
+            lines = lines[:-1]
+        response = "\n".join(lines).strip()
+
+    # Take only the first line/token
+    response = response.splitlines()[0].strip()
+
+    # Strip quotes/backticks
+    response = response.strip(' "\'`')
 
     return response
 
 
 class LanguageCommandHandler(Node):
-    """
-    A ROS2 node that listens to user command and calls LLM to select the appropriate action
-    """
+    """ROS2 node that routes language commands to mission executables"""
+
     def __init__(self):
         super().__init__('language_command_handler')
 
-        # Declare and get the 'config_path' parameter
+        # -----------------------------
+        # Config loading
+        # -----------------------------
         self.declare_parameter('config_path', 'default')
-        self.config_path = self.get_parameter('config_path').get_parameter_value().string_value
-        if self.config_path == 'default':
-            return
+        self.config_path = self.get_parameter(
+            'config_path'
+        ).get_parameter_value().string_value
 
-        # Load config file and update the class variables
+        if self.config_path == 'default':
+            self.get_logger().error(
+                "config_path parameter not set. Please provide a valid YAML config."
+            )
+            raise RuntimeError("Missing config_path")
+
         with open(self.config_path, 'r') as f:
-            config_data = yaml.safe_load(f)        
-        if config_data['OPENAI_API_KEY'] == 'bashrc':
-            config_data['OPENAI_API_KEY'] = os.getenv('OPENAI_API_KEY')
-        self.openai_client = openai.OpenAI(api_key=config_data['OPENAI_API_KEY'])
-        self.prompt = config_data['prompt']
-        self.node_action_candidates = config_data['action_candidates']['node']
-        self.launch_action_candidates = config_data['action_candidates']['launch']
+            config_data = yaml.safe_load(f)
+
+        # OpenAI API key
+        api_key = config_data.get('OPENAI_API_KEY', None)
+        if api_key == 'bashrc':
+            api_key = os.getenv('OPENAI_API_KEY')
+
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY not found")
+
+        self.openai_client = openai.OpenAI(api_key=api_key)
+
+        # -----------------------------
+        # Mission definitions
+        # -----------------------------
+        self.node_action_candidates = [
+            "mission1_toilet",
+            "mission2_food",
+            "mission3_red_cone",
+            "mission3_green_cone",
+            "mission3_blue_cone",
+            "mission4_box",
+            "mission5_stopsign",
+            "mission6_nurse",
+        ]
+
+        # Build mission-aware prompt (README-based, language-robust)
+        self.prompt = f"""
+You are a routing module for a robot.
+
+Your task:
+- Read the USER COMMAND.
+- Choose EXACTLY ONE action from ACTION_CANDIDATES.
+- Output ONLY the action name.
+
+IMPORTANT INTERPRETATION RULES:
+- User commands may be indirect, emotional, metaphorical, or urgent.
+- Do NOT rely only on literal keywords.
+- Infer the user's INTENT from meaning and context.
+- Complaints, desires, or physical states imply an action request.
+- Slang, exaggeration, or casual expressions are common.
+
+Do NOT include explanations, punctuation, quotes, or code blocks.
+Mission descriptions and typical phrasing:
+
+1) mission1_toilet
+	INTENT: The user urgently needs to go to the toilet or restroom.
+	This may be expressed indirectly or emotionally.
+	
+	Examples:
+	- "I really need to go to the bathroom."
+	- "I feel like I’m about to poop."
+	- "I can’t hold it anymore."
+	- "My stomach hurts, I need a toilet now."
+	- "I’m desperate, where’s the restroom?"
+	These expressions indicate urgency, discomfort, or bodily need.
+
+2) mission2_food
+INTENT: The user wants to find something edible because they are hungry.
+This may be expressed as a feeling or complaint.
+
+Examples:- "I’m hungry."
+- "Is there anything I can eat?"
+- "I want something to eat."
+- "I haven’t eaten all day."
+- "I feel starving."
+Mentions of hunger, food desire, or edible objects imply this mission.
+
+3.1) mission3_red_cone
+INTENT: The user wants the robot to go to the RED cone.
+Color cues include: "red", "reddish", "빨강", "빨간", "red cone"
+Examples:
+- "Go to the red cone."
+- "Move to the 빨간 cone."
+- "That red one."
+
+3.2) mission3_green_cone
+INTENT: The user wants the robot to go to the GREEN cone.
+Color cues include: "green", "greenish", "초록", "초록색", "green cone"
+Examples:
+- "Go to the green cone."
+- "Move to the 초록 cone."
+- "That green one."
+
+3.3) mission3_blue_cone
+INTENT: The user wants the robot to go to the BLUE cone.
+Color cues include: "blue", "bluish", "파랑", "파란", "blue cone"
+Examples:
+- "Go to the blue cone."
+- "Move to the 파란 cone."
+- "That blue one."
+
+4) mission4_box
+INTENT: The user wants the robot to push or move a box to a goal area.
+
+Examples:
+- "Move the box over there."
+- "Push that box to the red zone."
+- "Deliver the box."
+Any request involving pushing, moving, or delivering a box implies this mission.
+
+5) mission5_emptyroom
+INTENT: The user wants to go to a room that is allowed or safe.
+
+Examples:
+- "Go to an empty room."
+- "Find a room without a stop sign."
+- "Move to the empty room without stop sign."
+Avoiding stop signs or restricted areas implies this mission.
+
+6) mission6_nurse
+INTENT: The user wants the robot to approach a nurse and move around her.
+
+Examples:
+- "Find the nurse."
+- "Go to that nurse."
+- "Circle around her."
+Mentions of nurse or rotating around a person imply this mission.
+
+USER COMMAND:USER_COMMAND
+ACTION CANDIDATES:ACTION_CANDIDATES""".strip()
+
+        # Insert action list into prompt
+        action_lines = "\n".join(f"- {a}" for a in self.node_action_candidates)
+        self.prompt = self.prompt.replace("ACTION_CANDIDATES", action_lines)
+
+        self.get_logger().info(f"Loaded prompt:\n{self.prompt}")
+
+        # -----------------------------
+        # Process management
+        # -----------------------------
         self.current_action = None
-        self.current_process = None  # Track the running subprocess
+        self.current_process = None
         self.pkg_name = 'language_command_handler'
 
-        # Path to setup.bash file
         pkg_share_dir = get_package_share_directory(self.pkg_name)
-        workspace_install_path = os.path.join(pkg_share_dir, '..', '..', '..', 'setup.bash')
+        workspace_install_path = os.path.join(
+            pkg_share_dir, '..', '..', '..', 'setup.bash'
+        )
         self.workspace_install_path = os.path.abspath(workspace_install_path)
 
-        # Update prompt with action candidates
-        self.action_string = ""
-        for node_action in self.node_action_candidates:
-            self.action_string += f"- {node_action}\n"
-        for launch_action in self.launch_action_candidates:
-            self.action_string += f"- {launch_action}\n"
-        self.prompt = self.prompt.replace("ACTION_CANDIDATES", self.action_string)
-
-        self.get_logger().info(f'Prompt: \n{self.prompt}\n')        
-
-        # Create OpenAI client
-        self.openai_client = openai.OpenAI(api_key=config_data['OPENAI_API_KEY'])
-        if not self.openai_client:
-            self.get_logger().error('Failed to create OpenAI client')
-            return
-       
-        # Create a service to handle user command
+        # -----------------------------
+        # ROS2 service
+        # -----------------------------
         self.language_command_service = self.create_service(
             LanguageCommand,
             '/language_command',
             self.language_command_callback
         )
 
-        self.get_logger().info('Language command handler node initialized')
+        self.get_logger().info("Language command handler node initialized")
 
     def stop_previous_action(self):
-        """
-        Stop the currently running action (node or launch file)
-        """
+        """Stop currently running mission"""
         if self.current_process is not None:
-            self.get_logger().info(f'Stopping previous action: {self.current_action}')
+            self.get_logger().info(
+                f"Stopping previous action: {self.current_action}"
+            )
             try:
-                # Send SIGINT to the process group to terminate all child processes
-                os.killpg(os.getpgid(self.current_process.pid), signal.SIGINT)
+                os.killpg(
+                    os.getpgid(self.current_process.pid),
+                    signal.SIGINT
+                )
                 self.current_process.wait(timeout=5)
-                self.get_logger().info('Previous action stopped successfully')
             except subprocess.TimeoutExpired:
-                self.get_logger().warn('Process did not terminate gracefully, killing it')
-                os.killpg(os.getpgid(self.current_process.pid), signal.SIGKILL)
+                os.killpg(
+                    os.getpgid(self.current_process.pid),
+                    signal.SIGKILL
+                )
                 self.current_process.wait()
-            except Exception as e:
-                self.get_logger().error(f'Error stopping previous action: {str(e)}')
             finally:
                 self.current_process = None
                 self.current_action = None
 
     def start_action(self, action_name: str):
-        """
-        Start a new action (node or launch file)
-        """
-        # Stop previous action first
+        """Start selected mission"""
         self.stop_previous_action()
         time.sleep(1)
-        
-        # Determine if it's a node or launch action
-        if action_name in self.node_action_candidates:
-            command = f"source {self.workspace_install_path} && ros2 run {self.pkg_name} {action_name}"
-            self.get_logger().info(f'Starting node action: {action_name}')
-        elif action_name in self.launch_action_candidates:
-            command = f"source {self.workspace_install_path} && ros2 launch {self.pkg_name} {action_name}"
-            self.get_logger().info(f'Starting launch action: {action_name}')
-        else:
-            self.get_logger().error(f'Unknown action: {action_name}')
+
+        if action_name not in self.node_action_candidates:
+            self.get_logger().error(f"Unknown action: {action_name}")
             return
-        
-        try:
-            # Start the new process in a new process group
-            self.current_process = subprocess.Popen(
-                command,
-                shell=True,
-                executable='/bin/bash',
-                preexec_fn=os.setsid,  # Create new process group
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-            self.current_action = action_name
-            self.get_logger().info(f'Action {action_name} started with PID: {self.current_process.pid}')
-        except Exception as e:
-            self.get_logger().error(f'Error starting action {action_name}: {str(e)}')
+
+        command = (
+            f"source {self.workspace_install_path} && "
+            f"ros2 run {self.pkg_name} {action_name}"
+        )
+
+        self.get_logger().info(f"Starting mission: {action_name}")
+
+        self.current_process = subprocess.Popen(
+            command,
+            shell=True,
+            executable='/bin/bash',
+            preexec_fn=os.setsid,
+        )
+        self.current_action = action_name
 
     def language_command_callback(self, request, response):
-        """
-        Callback function for user command service
-        """       
-        
+        """Service callback"""
         user_command = request.command
-        self.get_logger().info(f'Received user command: {user_command}')
+        self.get_logger().info(f"Received command: {user_command}")
 
-        # Update prompt with user command
         prompt = self.prompt.replace("USER_COMMAND", user_command)
-        self.get_logger().info(f'Prompt: \n{prompt}\n')
-        
+
         try:
-            # Call LLM to get actionT
             llm_response = call_LLM(prompt, self.openai_client)
-            self.get_logger().info(f'LLM response: \n{llm_response}\n')
-            
-            # Parse response
+            self.get_logger().info(f"LLM response: {llm_response}")
+
             selected_action = parse_LLM_response(llm_response)
-            self.get_logger().info(f'Selected action: \n{selected_action}\n')
-            
-            # Determine action type and create response message
-            if selected_action in self.node_action_candidates:
-                response.response_message = f'Start ROS2 node: {selected_action}'
-            elif selected_action in self.launch_action_candidates:
-                response.response_message = f'Start ROS2 launch: {selected_action}'
-            else:
-                response.response_message = f'Unknown action: {selected_action}'
-                self.get_logger().error(response.response_message)
+            self.get_logger().info(f"Selected action: {selected_action}")
+
+            if selected_action not in self.node_action_candidates:
+                response.response_message = f"Unknown action: {selected_action}"
                 return response
-            
-            # Start the selected action (stops previous action first)
+
             self.start_action(selected_action)
-            
+            response.response_message = f"Started mission: {selected_action}"
+
         except Exception as e:
-            error_msg = f'Error processing command: {str(e)}'
-            self.get_logger().error(error_msg)
-            response.response_message = error_msg
-        
+            response.response_message = f"Error: {str(e)}"
+            self.get_logger().error(response.response_message)
+
         return response
 
     def cleanup(self):
-        """
-        Cleanup method to stop any running processes before shutdown
-        """
-        self.get_logger().info('Cleaning up...')
+        """Cleanup before shutdown"""
         self.stop_previous_action()
 
 
 def main(args=None):
-    """
-    Main function to initialize ROS2 node
-    """
-    
-    # Initialize ROS2
     rclpy.init(args=args)
-    
-    # Create node
-    language_command_handler = LanguageCommandHandler()
-
+    node = LanguageCommandHandler()
     try:
-        rclpy.spin(language_command_handler)
+        rclpy.spin(node)
     except KeyboardInterrupt:
-        language_command_handler.get_logger().info('Interrupted by user')
+        pass
     finally:
-        language_command_handler.cleanup()
-        language_command_handler.destroy_node()
+        node.cleanup()
+        node.destroy_node()
         rclpy.shutdown()
 
 
 if __name__ == "__main__":
-    print('started python script')
     main()
