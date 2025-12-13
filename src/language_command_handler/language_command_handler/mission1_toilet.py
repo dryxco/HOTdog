@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ROS2 node: navigate_to_toilet
+ROS2 node: mission1_toilet
 Goal: Move robot to pre-defined toilet location, align camera, and bark when in position.
 """
 
@@ -13,9 +13,9 @@ from std_msgs.msg import String, Float32
 from cv_bridge import CvBridge
 import math
 
-class NavigateToToilet(Node):
+class Mission1Toilet(Node):
     def __init__(self):
-        super().__init__('navigate_to_toilet')
+        super().__init__('mission1_toilet')
 
         # -----------------------------
         # Subscribers

@@ -7,9 +7,9 @@ from std_msgs.msg import Float32, String
 from cv_bridge import CvBridge
 import math
 
-class RotateAroundNurse(Node):
+class Mission6Nurse(Node):
     def __init__(self):
-        super().__init__('rotate_around_nurse')
+        super().__init__('mission6_nurse')
 
         # Subscriptions
         self.image_sub = self.create_subscription(
