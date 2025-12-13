@@ -39,7 +39,7 @@ class PerceptionNode(Node):
         super().__init__('perception_node')
 
         # Declare parameters
-        self.declare_parameter('model_path', 'yolov8n.pt') # trained yolo model path로 수정 필요함
+        self.declare_parameter('model_path', '../best.pt') # trained yolo model path로 수정 필요함
         self.declare_parameter('confidence_threshold', 0.5)
         self.declare_parameter('distance_threshold', 3.0)
         self.declare_parameter('center_region_ratio', 0.6)
