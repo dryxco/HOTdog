@@ -1,23 +1,28 @@
+#!/usr/bin/env python3
+
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Twist, Pose
-from nav_msgs.msg import Odometry
-from sensor_msgs.msg import Image
+from geometry_msgs.msg import Twist, PoseStamped
 from std_msgs.msg import Float32, String
+from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 import math
+
 
 class Mission6Nurse(Node):
     def __init__(self):
         super().__init__('mission6_nurse')
 
-        # Subscriptions
-        self.image_sub = self.create_subscription(
-            Image,
-            '/camera/detections/image',
-            self.image_callback,
+        # -----------------------------
+        # Subscribers
+        # -----------------------------
+        self.pose_sub = self.create_subscription(
+            PoseStamped,
+            '/go1_pose',
+            self.pose_callback,
             10
         )
+
         self.label_sub = self.create_subscription(
             String,
             '/detections/labels',
@@ -36,38 +41,51 @@ class Mission6Nurse(Node):
             self.center_callback,
             10
         )
-        self.odom_sub = self.create_subscription(
-            Odometry,
-            '/odom',
-            self.odom_callback,
+
+        # -----------------------------
+        # Publishers
+        # -----------------------------
+        self.goal_pub = self.create_publisher(
+            PoseStamped,
+            '/goal_pose',
+            10
+        )
+        self.cmd_pub = self.create_publisher(
+            Twist,
+            '/cmd_vel',
             10
         )
 
-        # Publisher
-        self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        # -----------------------------
+        # State
+        # -----------------------------
+        self.state = "SEND_GOAL"
 
-        self.bridge = CvBridge()
+        self.robot_x = None
+        self.robot_y = None
 
-        # FSM 상태
-        self.state = "NAVIGATE"  # NAVIGATE → SEARCH → ALIGN → APPROACH → ROTATE_AROUND
-
-        # 탐지 정보
         self.detected_label = None
         self.distance = None
         self.center_x = None
 
-        # 현재 위치
-        self.current_x = 0.0
-        self.current_y = 0.0
-        self.current_yaw = 0.0
-
-        # 목표 위치 (방문 앞)
+        # 목표 위치 (map frame)
         self.goal_x = 2.0
         self.goal_y = 1.0
+        self.arrival_threshold = 0.5
+
+        self.bridge = CvBridge()
+
+        self.timer = self.create_timer(0.1, self.control_loop)
+
+        self.get_logger().info("👩‍⚕️ Mission6 Nurse node started")
 
     # -----------------------------
     # Callbacks
     # -----------------------------
+    def pose_callback(self, msg: PoseStamped):
+        self.robot_x = msg.pose.position.x
+        self.robot_y = msg.pose.position.y
+
     def label_callback(self, msg: String):
         self.detected_label = msg.data
 
@@ -77,124 +95,105 @@ class Mission6Nurse(Node):
     def center_callback(self, msg: Float32):
         self.center_x = msg.data
 
-    def odom_callback(self, msg: Odometry):
-        self.current_x = msg.pose.pose.position.x
-        self.current_y = msg.pose.pose.position.y
-        # yaw 계산
-        q = msg.pose.pose.orientation
-        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
-        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-        self.current_yaw = math.atan2(siny_cosp, cosy_cosp)
+    # -----------------------------
+    # Helpers
+    # -----------------------------
+    def publish_goal(self):
+        goal = PoseStamped()
+        goal.header.stamp = self.get_clock().now().to_msg()
+        goal.header.frame_id = "map"
+        goal.pose.position.x = self.goal_x
+        goal.pose.position.y = self.goal_y
+        goal.pose.orientation.w = 1.0
 
-    def image_callback(self, msg: Image):
-        frame = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-        nurse_visible = (self.detected_label == "nurse")
+        self.goal_pub.publish(goal)
+        self.get_logger().info("📍 Nurse mission goal published")
 
-        # FSM 실행
-        if self.state == "NAVIGATE":
-            self.navigate_to_goal()
+    def distance_to_goal(self):
+        if self.robot_x is None:
+            return None
+        return math.hypot(
+            self.goal_x - self.robot_x,
+            self.goal_y - self.robot_y
+        )
+
+    # -----------------------------
+    # FSM
+    # -----------------------------
+    def control_loop(self):
+
+        # 0) 전역 이동
+        if self.state == "SEND_GOAL":
+            self.publish_goal()
+            self.state = "WAIT_ARRIVAL"
+
+        elif self.state == "WAIT_ARRIVAL":
+            dist = self.distance_to_goal()
+            if dist is None:
+                return
+
+            self.get_logger().info(f"⏳ Distance to nurse area: {dist:.2f}")
+
+            if dist < self.arrival_threshold:
+                self.get_logger().info("✅ Arrived at nurse area → SEARCH")
+                self.state = "SEARCH"
+
+        # 1) nurse 탐색
         elif self.state == "SEARCH":
-            self.search(nurse_visible)
+            twist = Twist()
+            twist.angular.z = 0.4
+            self.cmd_pub.publish(twist)
+
+            if self.detected_label == "nurse":
+                self.get_logger().info("👀 Nurse detected → ALIGN")
+                self.state = "ALIGN"
+
+        # 2) bbox center 정렬
         elif self.state == "ALIGN":
-            self.align(nurse_visible, self.center_x)
+            if self.detected_label != "nurse" or self.center_x is None:
+                self.state = "SEARCH"
+                return
+
+            img_center_x = 320
+            error = self.center_x - img_center_x
+
+            twist = Twist()
+            if abs(error) > 20:
+                twist.angular.z = -0.002 * error
+                self.cmd_pub.publish(twist)
+            else:
+                self.cmd_pub.publish(Twist())
+                self.state = "APPROACH"
+
+        # 3) 접근
         elif self.state == "APPROACH":
-            self.approach(nurse_visible, self.distance)
+            if self.detected_label != "nurse" or self.distance is None:
+                self.state = "SEARCH"
+                return
+
+            twist = Twist()
+            if self.distance > 1.0:
+                twist.linear.x = 0.25
+                self.cmd_pub.publish(twist)
+            else:
+                self.cmd_pub.publish(Twist())
+                self.state = "ROTATE_AROUND"
+
+        # 4) 주변 회전
         elif self.state == "ROTATE_AROUND":
-            self.rotate_around()
-
-    # -----------------------------
-    # 0) 목표 위치로 이동 (실제 좌표 기반)
-    # -----------------------------
-    def navigate_to_goal(self):
-        dx = self.goal_x - self.current_x
-        dy = self.goal_y - self.current_y
-        distance = math.hypot(dx, dy)
-        target_yaw = math.atan2(dy, dx)
-        yaw_error = target_yaw - self.current_yaw
-
-        # 각도를 [-pi, pi]로 보정
-        while yaw_error > math.pi:
-            yaw_error -= 2*math.pi
-        while yaw_error < -math.pi:
-            yaw_error += 2*math.pi
-
-        twist = Twist()
-
-        # 회전 우선
-        if abs(yaw_error) > 0.1:
-            twist.angular.z = 0.5 * yaw_error
-        elif distance > 0.1:
-            twist.linear.x = 0.25
-
-        self.cmd_pub.publish(twist)
-        self.get_logger().info(f"Navigating: distance={distance:.2f}, yaw_error={yaw_error:.2f}")
-
-        if distance <= 0.1:
-            self.get_logger().info("Reached goal → SEARCH 단계로 이동")
-            self.state = "SEARCH"
-            self.cmd_pub.publish(Twist())
-
-    # -----------------------------
-    # 1) 주변 회전하며 nurse 찾기
-    # -----------------------------
-    def search(self, nurse_visible):
-        twist = Twist()
-        twist.angular.z = 0.4
-        self.cmd_pub.publish(twist)
-        if nurse_visible:
-            self.get_logger().info("Nurse detected → ALIGN 단계로 이동")
-            self.state = "ALIGN"
-
-    # -----------------------------
-    # 2) bbox center 기준 정렬
-    # -----------------------------
-    def align(self, nurse_visible, nurse_center_x):
-        if not nurse_visible or nurse_center_x is None:
-            self.state = "SEARCH"
-            return
-
-        twist = Twist()
-        img_center_x = 320  # 카메라 중심
-        error = nurse_center_x - img_center_x
-
-        if abs(error) > 20:  # 허용 오차
-            twist.angular.z = -0.002 * error
+            twist = Twist()
+            twist.linear.x = 0.2
+            twist.angular.z = 0.4
             self.cmd_pub.publish(twist)
-        else:
-            self.state = "APPROACH"
-            self.cmd_pub.publish(Twist())
 
-    # -----------------------------
-    # 3) nurse까지 직진
-    # -----------------------------
-    def approach(self, nurse_visible, distance):
-        if not nurse_visible or distance is None:
-            self.state = "SEARCH"
-            return
-
-        twist = Twist()
-        if distance > 1.0:
-            twist.linear.x = 0.25
-            self.cmd_pub.publish(twist)
-        else:
-            self.state = "ROTATE_AROUND"
-            self.cmd_pub.publish(Twist())
-
-    # -----------------------------
-    # 4) nurse 주변 원 회전
-    # -----------------------------
-    def rotate_around(self):
-        twist = Twist()
-        twist.linear.x = 0.2
-        twist.angular.z = 0.4
-        self.cmd_pub.publish(twist)
 
 def main(args=None):
     rclpy.init(args=args)
-    node = RotateAroundNurse()
+    node = Mission6Nurse()
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
+
 
 if __name__ == "__main__":
     main()
