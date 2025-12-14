@@ -1,26 +1,16 @@
 #!/usr/bin/env python3
 """
-ROS2 node: navigate_to_empty_room (Mission 5)
+Mission 5: Navigate to Empty Room (Corrected Frames; uses Localization /go1_pose)
 
 Goal:
-- Move to the empty room WITHOUT a stop sign.
-- There are 2 candidate rooms. Stop sign location can change:
-  - in front of room1 or room2
-  - distance from entrance can vary
-- Strategy:
-  1) Go to ROOM1_FRONT, scan for stop_sign by yaw-sweeping and reading /detections/labels.
-  2) Go to ROOM2_FRONT, scan similarly.
-  3) Enter the room whose entrance does NOT have stop_sign by navigating to its INSIDE pose.
-  4) Success condition: robot body inside -> we stop at INSIDE pose (distance threshold).
+  1) Go to Room 1 front -> Scan for Stop Sign
+  2) Go to Room 2 front -> Scan for Stop Sign
+  3) Enter the room WITHOUT Stop Sign
 
-Topics (aligned with sample navigate_to_toilet):
-- Sub: /odom (nav_msgs/Odometry)
-- Sub: /detections/labels (std_msgs/String)
-- Pub: /cmd_vel (geometry_msgs/Twist)
-- Pub (optional): /robot_dog/speech (std_msgs/String)
-
-IMPORTANT:
-- Fill the four poses below using absolute coordinates in your working frame (/odom for this controller).
+Key idea:
+- /goal_pose: map frame goal (absolute)
+- /go1_pose: localization-provided robot pose in map frame (subscribe only)
+- Do NOT publish /go1_pose from this node.
 """
 
 import math
@@ -29,202 +19,208 @@ from typing import Optional, List
 
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Twist
-from nav_msgs.msg import Odometry
-from std_msgs.msg import String
-
+from geometry_msgs.msg import Twist, PoseStamped
+from std_msgs.msg import String, Bool
 
 # ============================================================
-# [TODO] Fill these poses (x, y, yaw[radian]) in /odom (or consistent frame)
+# [TODO] Replace with actual map coordinates
 # ============================================================
-ROOM1_FRONT  = [0.0, 0.0, 0.0]  # entrance viewpoint
-ROOM2_FRONT  = [0.0, 0.0, 0.0]
-ROOM1_INSIDE = [0.0, 0.0, 0.0]  # inside point (robot body in room)
-ROOM2_INSIDE = [0.0, 0.0, 0.0]
+ROOM1_FRONT  = [1.0, 0.0, 0.0]
+ROOM2_FRONT  = [1.0, 2.0, 0.0]
+ROOM1_INSIDE = [2.0, 0.0, 0.0]
+ROOM2_INSIDE = [2.0, 2.0, 0.0]
 
 STOP_KEYWORDS = ["stop_sign", "stop sign", "stopsign", "stop-sign"]
 
-
-class NavigateToEmptyRoom(Node):
+class Mission5EmptyRoom(Node):
     def __init__(self):
-        super().__init__("navigate_to_empty_room")
-
-        # Subscribers
-        self.odom_sub = self.create_subscription(Odometry, "/odom", self.odom_callback, 10)
-        self.label_sub = self.create_subscription(String, "/detections/labels", self.label_callback, 10)
+        super().__init__("mission5_emptyroom")
 
         # Publishers
+        self.goal_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
+        self.emergency_pub = self.create_publisher(Bool, "/emergency", 10)
         self.cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         self.speech_pub = self.create_publisher(String, "/robot_dog/speech", 10)
 
-        # State
+        # Subscribers
+        self.pose_sub = self.create_subscription(PoseStamped, "/go1_pose", self.pose_callback, 10)
+        self.label_sub = self.create_subscription(String, "/detections/labels", self.label_callback, 10)
+
+        # Internal State (map frame)
         self.robot_x = 0.0
         self.robot_y = 0.0
         self.robot_yaw = 0.0
-        self.have_odom = False
+        self.have_pose = False
         self.detected_label = ""
 
         self.room1_has_stop: Optional[bool] = None
         self.room2_has_stop: Optional[bool] = None
 
-        self.state = "WAIT_ODOM"  # WAIT_ODOM -> NAV_R1 -> SCAN_R1 -> NAV_R2 -> SCAN_R2 -> ENTER -> DONE
+        self.state = "WAIT_POSE"
         self.state_enter_time = time.time()
+        self.last_goal_pub_time = 0.0
+
+        self.xy_tolerance = 0.4
 
         self.timer = self.create_timer(0.1, self.control_loop)
+        self.get_logger().info("Mission 5 (Map Frame Version) initialized.")
 
-        self.get_logger().info("NavigateToEmptyRoom initialized (Mission 5).")
+    # -------------------------------------------------------------
+    # Callbacks
+    # -------------------------------------------------------------
+    def pose_callback(self, msg: PoseStamped):
+        self.robot_x = msg.pose.position.x
+        self.robot_y = msg.pose.position.y
 
-    def odom_callback(self, msg: Odometry):
-        self.robot_x = msg.pose.pose.position.x
-        self.robot_y = msg.pose.pose.position.y
-
-        q = msg.pose.pose.orientation
+        q = msg.pose.orientation
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         self.robot_yaw = math.atan2(siny_cosp, cosy_cosp)
 
-        self.have_odom = True
+        self.have_pose = True
 
     def label_callback(self, msg: String):
         self.detected_label = (msg.data or "").strip().lower()
 
-    def normalize_angle(self, angle: float) -> float:
-        while angle > math.pi:
-            angle -= 2.0 * math.pi
-        while angle < -math.pi:
-            angle += 2.0 * math.pi
-        return angle
-
+    # -------------------------------------------------------------
+    # Helper Methods
+    # -------------------------------------------------------------
     def distance_to(self, x: float, y: float) -> float:
         return math.hypot(x - self.robot_x, y - self.robot_y)
 
-    def angle_to(self, x: float, y: float) -> float:
-        return math.atan2(y - self.robot_y, x - self.robot_x)
+    def set_tracker_active(self, active: bool):
+        msg = Bool()
+        msg.data = not active  # /emergency True => stop
+        self.emergency_pub.publish(msg)
+        if not active:
+            self.cmd_pub.publish(Twist())
 
-    def stop(self):
-        self.cmd_pub.publish(Twist())
+    def publish_goal(self, coords: List[float]):
+        now = time.time()
+        if now - self.last_goal_pub_time > 0.5:
+            goal = PoseStamped()
+            goal.header.frame_id = "map"
+            goal.header.stamp = self.get_clock().now().to_msg()
+            goal.pose.position.x = float(coords[0])
+            goal.pose.position.y = float(coords[1])
+            goal.pose.position.z = 0.0
+            goal.pose.orientation.w = 1.0
+            self.goal_pub.publish(goal)
+            self.last_goal_pub_time = now
 
     def set_state(self, s: str):
         self.state = s
         self.state_enter_time = time.time()
-
-    def at_goal_xy(self, goal: List[float], tol: float = 0.35) -> bool:
-        return self.distance_to(goal[0], goal[1]) < tol
+        self.get_logger().info(f"State changed to: {s}")
 
     def has_stop_sign(self) -> bool:
         txt = self.detected_label or ""
         return any(k in txt for k in STOP_KEYWORDS)
 
-    def goto_xy(self, goal: List[float]):
-        xg, yg, _ = goal
-        dist = self.distance_to(xg, yg)
-        goal_angle = self.angle_to(xg, yg)
-        angle_error = self.normalize_angle(goal_angle - self.robot_yaw)
+    def stop_robot(self):
+        self.cmd_pub.publish(Twist())
 
-        twist = Twist()
-        if dist > 0.15:
-            twist.linear.x = min(0.25, 0.6 * dist)
-            twist.angular.z = 0.8 * angle_error
-        else:
-            twist.linear.x = 0.0
-            twist.angular.z = 0.0
-
-        self.cmd_pub.publish(twist)
-
-    def scan_by_yaw_sweep(self, duration: float = 2.5) -> bool:
-        seen_stop = False
-        start = time.time()
-        while time.time() - start < duration and rclpy.ok():
-            tw = Twist()
-            tw.angular.z = 0.6
-            self.cmd_pub.publish(tw)
-            if self.has_stop_sign():
-                seen_stop = True
-            time.sleep(0.1)
-        self.stop()
-        return seen_stop
-
+    # -------------------------------------------------------------
+    # Main Control Loop
+    # -------------------------------------------------------------
     def control_loop(self):
-        if self.state == "WAIT_ODOM":
-            if self.have_odom:
-                self.get_logger().info("Odometry received. Start Mission 5.")
+        if self.state == "WAIT_POSE":
+            if self.have_pose:
+                self.get_logger().info("Localization pose received. Starting Mission 5.")
                 self.set_state("NAV_R1")
             return
 
         if self.state == "NAV_R1":
-            self.goto_xy(ROOM1_FRONT)
-            if self.at_goal_xy(ROOM1_FRONT):
-                self.stop()
+            self.set_tracker_active(True)
+            self.publish_goal(ROOM1_FRONT)
+            if self.distance_to(ROOM1_FRONT[0], ROOM1_FRONT[1]) < self.xy_tolerance:
+                self.set_tracker_active(False)
+                self.stop_robot()
                 self.set_state("SCAN_R1")
             return
 
         if self.state == "SCAN_R1":
-            if time.time() - self.state_enter_time < 0.3:
-                return
-            self.get_logger().info("[Scan] Room1 entrance...")
-            self.room1_has_stop = self.scan_by_yaw_sweep(duration=2.5)
-            self.get_logger().info(f"[Scan] Room1 stop_sign={self.room1_has_stop} labels='{self.detected_label}'")
-            self.set_state("NAV_R2")
+            self.set_tracker_active(False)
+            if time.time() - self.state_enter_time < 2.5:
+                tw = Twist()
+                tw.angular.z = 0.6
+                self.cmd_pub.publish(tw)
+                if self.has_stop_sign():
+                    self.room1_has_stop = True
+            else:
+                self.stop_robot()
+                if self.room1_has_stop is None:
+                    self.room1_has_stop = False
+                self.get_logger().info(f"Room 1 Check Result: Stop Sign = {self.room1_has_stop}")
+                self.set_state("NAV_R2")
             return
 
         if self.state == "NAV_R2":
-            self.goto_xy(ROOM2_FRONT)
-            if self.at_goal_xy(ROOM2_FRONT):
-                self.stop()
+            self.set_tracker_active(True)
+            self.publish_goal(ROOM2_FRONT)
+            if self.distance_to(ROOM2_FRONT[0], ROOM2_FRONT[1]) < self.xy_tolerance:
+                self.set_tracker_active(False)
+                self.stop_robot()
                 self.set_state("SCAN_R2")
             return
 
         if self.state == "SCAN_R2":
-            if time.time() - self.state_enter_time < 0.3:
-                return
-            self.get_logger().info("[Scan] Room2 entrance...")
-            self.room2_has_stop = self.scan_by_yaw_sweep(duration=2.5)
-            self.get_logger().info(f"[Scan] Room2 stop_sign={self.room2_has_stop} labels='{self.detected_label}'")
-            self.set_state("ENTER")
+            self.set_tracker_active(False)
+            if time.time() - self.state_enter_time < 2.5:
+                tw = Twist()
+                tw.angular.z = 0.6
+                self.cmd_pub.publish(tw)
+                if self.has_stop_sign():
+                    self.room2_has_stop = True
+            else:
+                self.stop_robot()
+                if self.room2_has_stop is None:
+                    self.room2_has_stop = False
+                self.get_logger().info(f"Room 2 Check Result: Stop Sign = {self.room2_has_stop}")
+                self.set_state("ENTER")
             return
 
         if self.state == "ENTER":
-            if self.room1_has_stop is None or self.room2_has_stop is None:
-                self.get_logger().warn("Scan results missing; default to Room1.")
-                target_inside = ROOM1_INSIDE
+            target = ROOM1_INSIDE
+            if self.room1_has_stop and not self.room2_has_stop:
+                target = ROOM2_INSIDE
+                self.get_logger().info("Decision: Enter Room 2")
+            elif not self.room1_has_stop:
+                target = ROOM1_INSIDE
+                self.get_logger().info("Decision: Enter Room 1")
             else:
-                if (not self.room1_has_stop) and self.room2_has_stop:
-                    target_inside = ROOM1_INSIDE
-                elif (not self.room2_has_stop) and self.room1_has_stop:
-                    target_inside = ROOM2_INSIDE
-                elif (not self.room1_has_stop) and (not self.room2_has_stop):
-                    self.get_logger().warn("No stop sign detected at either entrance. Choosing Room1.")
-                    target_inside = ROOM1_INSIDE
-                else:
-                    self.get_logger().warn("Stop sign detected at BOTH entrances (noise?). Choosing Room2.")
-                    target_inside = ROOM2_INSIDE
+                target = ROOM1_INSIDE
+                self.get_logger().info("Decision: Default to Room 1")
 
-            self.get_logger().info(f"[Enter] Navigating to inside pose: {target_inside}")
-            self.goto_xy(target_inside)
+            self.set_tracker_active(True)
+            self.publish_goal(target)
 
-            if self.at_goal_xy(target_inside, tol=0.40):
-                self.stop()
-                self.get_logger().info("SUCCESS: Robot inside the selected empty room.")
+            if self.distance_to(target[0], target[1]) < self.xy_tolerance:
+                self.set_tracker_active(False)
+                self.stop_robot()
+                self.get_logger().info("SUCCESS: Robot entered the empty room.")
                 self.set_state("DONE")
             return
 
         if self.state == "DONE":
-            self.stop()
+            self.set_tracker_active(False)
+            self.stop_robot()
             return
-
 
 def main(args=None):
     rclpy.init(args=args)
-    node = NavigateToEmptyRoom()
+    node = Mission5EmptyRoom()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
-        node.stop()
+        stop_msg = Bool()
+        stop_msg.data = True
+        node.emergency_pub.publish(stop_msg)
+        node.stop_robot()
         node.destroy_node()
         rclpy.shutdown()
-
 
 if __name__ == "__main__":
     main()

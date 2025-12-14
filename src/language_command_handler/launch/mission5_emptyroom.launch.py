@@ -7,7 +7,7 @@ def generate_launch_description():
         Node(
             package='language_command_handler',
             executable='mission5_emptyroom.py',
-            name='navigate_to_empty_room',
+            name='mission5_emptyroom',
             output='screen',
         )
     ])

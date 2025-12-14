@@ -7,6 +7,7 @@ def generate_launch_description():
         Node(
             package='language_command_handler',
             executable='mission3_blue_cone.py',
+            name='mission3_blue_cone',
             output='screen',
         )
     ])

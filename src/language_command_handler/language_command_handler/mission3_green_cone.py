@@ -1,20 +1,14 @@
 #!/usr/bin/env python3
 """
-Mission 3: Move to the green cone and bark.
+Mission 3: Move to the green cone and bark (Corrected Frames)
 
-Behavior (simple & deterministic):
-1) Visit three fixed cone sites in order: site1 -> site2 -> site3
-2) At each site, wait briefly and check perception labels for the target color
-3) If the target color is detected at the current site, bark and stop (mission success)
-4) If not detected, proceed to the next site; if none matched, stop (mission fail/timeout)
+Key idea:
+- /goal_pose is expressed in the map frame (absolute goal on the map).
+- /go1_pose is provided by the localization module in the map frame (corrected robot pose).
+- This mission node must NOT republish /go1_pose (avoid frame mismatch and topic conflicts).
 
-Topics (aligned with your existing missions):
-- Sub: /odom (nav_msgs/Odometry)                 robot pose
-- Sub: /detections/labels (std_msgs/String)      perception labels (must include color keywords)
-- Pub: /cmd_vel (geometry_msgs/Twist)            low-level motion
-- Pub: /robot_dog/speech (std_msgs/String)       "bark"
-
-YOU MUST EDIT ONLY THE TODO COORDINATES BELOW.
+Notes:
+- CONE_SITES must be set to the 3 *exact* scan waypoints in map frame.
 """
 
 import math
@@ -23,196 +17,189 @@ from typing import Dict, List
 
 import rclpy
 from rclpy.node import Node
+from geometry_msgs.msg import Twist, PoseStamped
+from std_msgs.msg import String, Bool
 
-from geometry_msgs.msg import Twist
-from nav_msgs.msg import Odometry
-from std_msgs.msg import String
-
-
-TARGET_COLOR = "green"  # fixed for this file
-
-# Keywords used to detect target color in /detections/labels
-COLOR_KEYWORDS = {
-    "red":   ["red", "red_cone", "cone_red", "redcone", "cone(red)"],
-    "green": ["green", "green_cone", "cone_green", "greencone", "cone(green)"],
-    "blue":  ["blue", "blue_cone", "cone_blue", "bluecone", "cone(blue)"],
-}
+# -----------------------------
+# Mission parameters
+# -----------------------------
+XY_TOL = 0.35            # meters
+OBSERVE_SECONDS = 1.2    # seconds
 
 # ============================================================
-# TODO: Fill the three fixed cone sites (absolute coordinates).
-# - Use the same frame as /odom (or whatever your controller uses).
-# - yaw is optional; the controller below only uses x,y for driving.
+# [TODO] Replace the placeholders with the 3 exact scan points (map frame)
+# Format: [x, y, yaw]
 # ============================================================
-CONE_SITES: Dict[str, List[float]] = {
-    "site1": [0.0, 0.0, 0.0],  # TODO: [x1, y1, yaw1]
-    "site2": [0.0, 0.0, 0.0],  # TODO: [x2, y2, yaw2]
-    "site3": [0.0, 0.0, 0.0],  # TODO: [x3, y3, yaw3]
+CONE_SITES = [
+    [0.0, 0.0, 0.0],  # TODO: replace
+    [0.0, 0.0, 0.0],  # TODO: replace
+    [0.0, 0.0, 0.0],  # TODO: replace
+]
+SCAN_ORDER = [0, 1, 2]
+
+COLOR_KEYWORDS: Dict[str, List[str]] = {
+    "green": ["green", "green_cone", "green cone", "cone_green", "green-cone"],
 }
-SCAN_ORDER = ["site1", "site2", "site3"]
 
-
-class Mission3Cone(Node):
+class Mission3GreenCone(Node):
     def __init__(self):
-        super().__init__(f"mission3_{TARGET_COLOR}_cone")
+        super().__init__("mission3_green_cone")
 
-        # ROS I/O
-        self.cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+        # Publishers
+        self.goal_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
+        self.emergency_pub = self.create_publisher(Bool, "/emergency", 10)
+        self.cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)  # safety stop
         self.speech_pub = self.create_publisher(String, "/robot_dog/speech", 10)
 
-        self.odom_sub = self.create_subscription(Odometry, "/odom", self._odom_cb, 10)
-        self.labels_sub = self.create_subscription(String, "/detections/labels", self._labels_cb, 10)
+        # Subscribers (Localization pose is the source of truth)
+        self.pose_sub = self.create_subscription(PoseStamped, "/go1_pose", self._pose_cb, 10)
+        self.label_sub = self.create_subscription(String, "/detections/labels", self._label_cb, 10)
 
-        # Pose state
-        self.have_odom = False
+        # Internal pose (map frame)
         self.x = 0.0
         self.y = 0.0
         self.yaw = 0.0
+        self.have_pose = False
 
-        # Perception
-        self.last_labels = ""
+        self.detected_label = ""
 
-        # Mission state machine
-        self.site_idx = 0
-        self.state = "WAIT_ODOM"   # WAIT_ODOM -> NAV -> OBSERVE -> BARK -> DONE
-        self.state_t0 = time.time()
+        self.state = "WAIT_POSE"
+        self.state_enter_time = time.time()
+        self.last_goal_pub_time = 0.0
 
-        # Tunables (safe defaults)
-        self.xy_tolerance = 0.35
-        self.observe_seconds = 1.2
-        self.max_linear = 0.25
-        self.k_lin = 0.6
-        self.k_ang = 0.8
+        self.site_cursor = 0
+        self.current_goal = CONE_SITES[SCAN_ORDER[self.site_cursor]]
 
-        self.timer = self.create_timer(0.1, self._loop)  # 10 Hz
+        self.timer = self.create_timer(0.1, self._loop)
+        self.get_logger().info("Mission 3 (Map Frame Version) initialized.")
 
-        self.get_logger().info(f"Mission3Cone started. TARGET_COLOR={TARGET_COLOR}")
-
-    # -------------------------
+    # -----------------------------
     # Callbacks
-    # -------------------------
-    def _odom_cb(self, msg: Odometry):
-        self.x = msg.pose.pose.position.x
-        self.y = msg.pose.pose.position.y
-        q = msg.pose.pose.orientation
+    # -----------------------------
+    def _pose_cb(self, msg: PoseStamped):
+        self.x = msg.pose.position.x
+        self.y = msg.pose.position.y
+
+        q = msg.pose.orientation
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         self.yaw = math.atan2(siny_cosp, cosy_cosp)
-        self.have_odom = True
 
-    def _labels_cb(self, msg: String):
-        self.last_labels = (msg.data or "").strip().lower()
+        self.have_pose = True
 
-    # -------------------------
+    def _label_cb(self, msg: String):
+        self.detected_label = (msg.data or "").strip().lower()
+
+    # -----------------------------
     # Helpers
-    # -------------------------
-    def _norm_angle(self, a: float) -> float:
-        while a > math.pi:
-            a -= 2.0 * math.pi
-        while a < -math.pi:
-            a += 2.0 * math.pi
-        return a
+    # -----------------------------
+    def _set_tracker_active(self, active: bool):
+        # /emergency: True = stop, False = run
+        b = Bool()
+        b.data = (not active)
+        self.emergency_pub.publish(b)
 
-    def _dist_to(self, gx: float, gy: float) -> float:
+        # Safety: explicitly stop /cmd_vel when we disable tracking
+        if not active:
+            self.cmd_pub.publish(Twist())
+
+    def _publish_goal_throttled(self, gx: float, gy: float):
+        now = time.time()
+        if now - self.last_goal_pub_time > 0.5:
+            ps = PoseStamped()
+            ps.header.frame_id = "map"
+            ps.header.stamp = self.get_clock().now().to_msg()
+            ps.pose.position.x = float(gx)
+            ps.pose.position.y = float(gy)
+            ps.pose.position.z = 0.0
+            ps.pose.orientation.w = 1.0
+            self.goal_pub.publish(ps)
+            self.last_goal_pub_time = now
+
+    def _distance_to(self, gx: float, gy: float) -> float:
         return math.hypot(gx - self.x, gy - self.y)
 
-    def _angle_to(self, gx: float, gy: float) -> float:
-        return math.atan2(gy - self.y, gx - self.x)
-
-    def _stop(self):
-        self.cmd_pub.publish(Twist())
-
-    def _goto_xy(self, gx: float, gy: float):
-        dist = self._dist_to(gx, gy)
-        ang = self._angle_to(gx, gy)
-        err = self._norm_angle(ang - self.yaw)
-
-        cmd = Twist()
-        if dist > 0.15:
-            cmd.linear.x = min(self.max_linear, self.k_lin * dist)
-            cmd.angular.z = self.k_ang * err
-        self.cmd_pub.publish(cmd)
-
-    def _arrived_xy(self, gx: float, gy: float) -> bool:
-        return self._dist_to(gx, gy) < self.xy_tolerance
-
-    def _target_seen(self) -> bool:
-        kws = COLOR_KEYWORDS.get(TARGET_COLOR, [])
-        txt = self.last_labels or ""
-        return any(kw in txt for kw in kws)
-
-    def _bark(self, times: int = 5, interval: float = 1.0):
-        msg = String()
-        msg.data = "bark"
-        for i in range(times):
-            self.speech_pub.publish(msg)
-            self.get_logger().info(f"BARK ({i+1}/{times})")
-            time.sleep(interval)
+    def _label_has_green_cone(self) -> bool:
+        txt = self.detected_label or ""
+        return any(k in txt for k in COLOR_KEYWORDS["green"])
 
     def _set_state(self, s: str):
         self.state = s
-        self.state_t0 = time.time()
+        self.state_enter_time = time.time()
+        self.get_logger().info(f"State changed to: {s}")
 
-    # -------------------------
+    def _bark(self, times: int = 3, interval: float = 0.5):
+        msg = String()
+        msg.data = "bark"
+        for _ in range(times):
+            self.speech_pub.publish(msg)
+            time.sleep(interval)
+
+    # -----------------------------
     # Main loop
-    # -------------------------
+    # -----------------------------
     def _loop(self):
-        if self.state == "WAIT_ODOM":
-            if self.have_odom:
-                self.get_logger().info("Odometry received. Starting site scan.")
+        if self.state == "WAIT_POSE":
+            if self.have_pose:
+                self.get_logger().info("Localization pose received. Starting Mission 3.")
                 self._set_state("NAV")
             return
 
-        if self.site_idx >= len(SCAN_ORDER):
-            self.get_logger().warn("Target cone NOT found at any site. Stopping.")
-            self._stop()
-            self._set_state("DONE")
-            return
-
-        site = SCAN_ORDER[self.site_idx]
-        gx, gy, _ = CONE_SITES[site]
-
         if self.state == "NAV":
-            self._goto_xy(gx, gy)
-            if self._arrived_xy(gx, gy):
-                self._stop()
-                self.get_logger().info(f"Arrived at {site}. Observing labels...")
+            gx, gy, _ = self.current_goal
+            self._set_tracker_active(True)
+            self._publish_goal_throttled(gx, gy)
+
+            if self._distance_to(gx, gy) < XY_TOL:
+                # Stop tracker before observation
+                self._set_tracker_active(False)
                 self._set_state("OBSERVE")
             return
 
         if self.state == "OBSERVE":
-            if self._target_seen():
-                self.get_logger().info(f"FOUND {TARGET_COLOR} at {site} (labels='{self.last_labels}').")
-                self._stop()
+            # Ensure tracker remains stopped
+            self._set_tracker_active(False)
+
+            if self._label_has_green_cone():
+                self.get_logger().info("Green cone detected. Barking.")
                 self._set_state("BARK")
                 return
 
-            if time.time() - self.state_t0 >= self.observe_seconds:
-                self.get_logger().info(f"{TARGET_COLOR} not seen at {site} (labels='{self.last_labels}'). Next site.")
-                self.site_idx += 1
+            if (time.time() - self.state_enter_time) > OBSERVE_SECONDS:
+                # Move to next site
+                self.site_cursor += 1
+                if self.site_cursor >= len(SCAN_ORDER):
+                    self.get_logger().warn("Green cone not found in any site. Finishing mission.")
+                    self._set_state("DONE")
+                    return
+
+                self.current_goal = CONE_SITES[SCAN_ORDER[self.site_cursor]]
                 self._set_state("NAV")
             return
 
         if self.state == "BARK":
-            self._bark(times=5, interval=1.0)
-            self._stop()
-            self.get_logger().info("Mission3 success. Done.")
+            self._bark(times=3, interval=0.5)
             self._set_state("DONE")
             return
 
         if self.state == "DONE":
-            self._stop()
+            self._set_tracker_active(False)
             return
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = Mission3Cone()
+    node = Mission3GreenCone()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
-        node._stop()
+        # Ensure tracker stop on shutdown
+        stop_msg = Bool()
+        stop_msg.data = True
+        node.emergency_pub.publish(stop_msg)
+        node.cmd_pub.publish(Twist())
         node.destroy_node()
         rclpy.shutdown()
 
