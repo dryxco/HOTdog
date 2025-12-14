@@ -16,6 +16,9 @@ import cv2
 import numpy as np
 from collections import deque
 
+from ament_index_python.packages import get_package_share_directory
+import os
+
 # Try to import ultralytics for YOLOv8
 try:
     from ultralytics import YOLO
@@ -39,16 +42,23 @@ class PerceptionNode(Node):
         super().__init__('perception_node')
 
         # Declare parameters
-        self.declare_parameter('model_path', 'best.pt') # trained yolo model path로 수정 필요함 #DONE
+        self.declare_parameter('model_path', 'models/best.pt') # trained yolo model path로 수정 필요함 #DONE
         self.declare_parameter('confidence_threshold', 0.5)
         self.declare_parameter('distance_threshold', 3.0)
         self.declare_parameter('center_region_ratio', 0.6)
 
         # Get parameters
-        self.model_path = self.get_parameter('model_path').value
+        model_path_param = self.get_parameter('model_path').value
         self.conf_threshold = self.get_parameter('confidence_threshold').value
         self.distance_threshold = self.get_parameter('distance_threshold').value
         self.center_ratio = self.get_parameter('center_region_ratio').value
+
+        pkg_share = get_package_share_directory('perception')
+        model_path = model_path_param
+        if not os.path.isabs(model_path_param):
+            model_path = os.path.join(pkg_share, model_path_param)
+
+        self.model_path = model_path
 
         # Initialize CV Bridge
         self.bridge = CvBridge()
