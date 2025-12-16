@@ -39,7 +39,7 @@ class PerceptionNode(Node):
 
         # Parameters
         self.declare_parameter('model_path', 'models/best_v2.pt')
-        self.declare_parameter('confidence_threshold', 0.5)
+        self.declare_parameter('confidence_threshold', 0.25)
         self.declare_parameter('distance_threshold', 3.0)
         self.declare_parameter('center_region_ratio', 0.6)
 
@@ -278,9 +278,12 @@ class PerceptionNode(Node):
         if len(detections) == 0:
             return []
 
-        # 🔥 최고 confidence 하나만
-        best_det = max(detections, key=lambda d: d['conf'])
-        return [best_det]
+        detections = [
+            d for d in detections
+            if 'eaten_pizza' not in d['class']
+        ]
+
+        return detections
 
 
 
