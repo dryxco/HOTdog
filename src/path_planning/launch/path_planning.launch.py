@@ -28,19 +28,19 @@ def generate_launch_description():
         ]
     )
 
-    # RViz Node
-    rviz_config_file = os.path.join(pkg_dir, 'rviz', 'path_planning.rviz')
-    rviz_node = Node(
-        package='rviz2',
-        executable='rviz2',
-        name='rviz2',
-        output='screen',
-        condition=IfCondition(LaunchConfiguration('use_rviz')),
-        arguments=['-d', rviz_config_file]
-    )
+    # # RViz Node
+    # rviz_config_file = os.path.join(pkg_dir, 'rviz', 'path_planning.rviz')
+    # rviz_node = Node(
+    #     package='rviz2',
+    #     executable='rviz2',
+    #     name='rviz2',
+    #     output='screen',
+    #     condition=IfCondition(LaunchConfiguration('use_rviz')),
+    #     arguments=['-d', rviz_config_file]
+    # )
 
     return LaunchDescription([
         use_rviz_arg,
         path_planner_node,
-        rviz_node
+        # rviz_node
     ])

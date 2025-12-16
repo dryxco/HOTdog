@@ -38,8 +38,8 @@ class PerceptionNode(Node):
         super().__init__('perception_node')
 
         # Parameters
-        self.declare_parameter('model_path', 'models/best.pt')
-        self.declare_parameter('confidence_threshold', 0.5)
+        self.declare_parameter('model_path', 'models/finetuned.pt')
+        self.declare_parameter('confidence_threshold', 0.35)
         self.declare_parameter('distance_threshold', 3.0)
         self.declare_parameter('center_region_ratio', 0.6)
 
@@ -186,6 +186,8 @@ class PerceptionNode(Node):
             distance = float('inf')
             if self.depth_image is not None:
                 distance = self.get_distance_at_bbox(self.depth_image, bbox)
+            if distance > self.distance_threshold:
+                continue
             if distance < min_distance:
                 min_distance = distance
 

@@ -10,7 +10,7 @@ setup(
         ('share/ament_index/resource_index/packages', ['resource/perception']),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', ['launch/perception_launch.py']),
-        ('share/perception/models', ['models/best.pt']),
+        ('share/perception/models', ['models/finetuned.pt']),
     ],
     install_requires=['setuptools', 'opencv-python'],
     zip_safe=True,

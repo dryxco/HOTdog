@@ -21,14 +21,22 @@ def generate_launch_description():
 
     # Files
     slam_toolbox_config = os.path.join(pkg_share, 'config', 'slam_toolbox.yaml')
-    map_file = os.path.join(pkg_share, 'maps', 'hospital.yaml')  # hospital.yaml must exist
+    default_map_file = os.path.join(pkg_share, 'maps', 'my_world.yaml')  # hospital.yaml must exist
 
     # Arg: choose new map vs load existing
     generate_new_map = LaunchConfiguration('generate_new_map')
+    map_yaml = LaunchConfiguration('map_yaml')
+
     declare_generate_new_map_cmd = DeclareLaunchArgument(
         name='generate_new_map',
         default_value='false',
         description='If true, run SLAM to create a new map; if false, load maps/hospital.yaml'
+    )
+
+    declare_map_yaml_cmd = DeclareLaunchArgument(
+        name='map_yaml',
+        default_value=default_map_file,
+        description='Full path to the map yaml to load when generate_new_map is false'
     )
 
     # (A) Create a new map with slam_toolbox (async online)
@@ -50,7 +58,7 @@ def generate_launch_description():
         name='map_server',
         output='screen',
         parameters=[{
-            'yaml_filename': map_file,
+            'yaml_filename': map_yaml,
             'use_sim_time': True
         }],
         condition=UnlessCondition(generate_new_map)
@@ -72,6 +80,7 @@ def generate_launch_description():
 
     ld = LaunchDescription()
     ld.add_action(declare_generate_new_map_cmd)
+    ld.add_action(declare_map_yaml_cmd)
     ld.add_action(slam_toolbox_cmd)
     ld.add_action(map_server_cmd)
     ld.add_action(lifecycle_manager_cmd)
