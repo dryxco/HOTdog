@@ -38,8 +38,8 @@ class PerceptionNode(Node):
         super().__init__('perception_node')
 
         # Parameters
-        self.declare_parameter('model_path', 'models/finetuned.pt')
-        self.declare_parameter('confidence_threshold', 0.35)
+        self.declare_parameter('model_path', 'models/best_v2.pt')
+        self.declare_parameter('confidence_threshold', 0.5)
         self.declare_parameter('distance_threshold', 3.0)
         self.declare_parameter('center_region_ratio', 0.6)
 
@@ -265,10 +265,23 @@ class PerceptionNode(Node):
                         x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                         cls_id = int(box.cls[0])
                         cls_name = self.model.names[cls_id]
-                        detections.append({'bbox':(x1,y1,x2,y2),'class':cls_name})
+                        conf = float(box.conf[0])
+
+                        detections.append({
+                            'bbox': (x1, y1, x2, y2),
+                            'class': cls_name,
+                            'conf': conf
+                        })
             except Exception as e:
                 self.get_logger().error(f'Detection error: {e}')
-        return detections
+
+        if len(detections) == 0:
+            return []
+
+        # 🔥 최고 confidence 하나만
+        best_det = max(detections, key=lambda d: d['conf'])
+        return [best_det]
+
 
 
 def main(args=None):
